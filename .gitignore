@@ -1,5 +1,8 @@
 my_req.txt
 requirements*.txt
+scripts
+configs
+yutong_experiments
 data/
 .idea/
 
