@@ -5,5 +5,5 @@ configs
 yutong_experiments
 data/
 .idea/
-
+*.ipynb
 *.pyc

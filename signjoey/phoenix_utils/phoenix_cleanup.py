@@ -54,34 +54,41 @@ def clean_phoenix_2014(prediction):
 
 
 def clean_phoenix_2014_trans(prediction):
-
+    """
+    Yutong
+    I think the format of ground truth annotation is already well processed.
+    Some parts of predicted gloss sequence might be processed using this func. e.g. combine single char with +
+    """
     prediction = prediction.strip()
-    prediction = re.sub(r"__LEFTHAND__", "", prediction)
-    prediction = re.sub(r"__EPENTHESIS__", "", prediction)
-    prediction = re.sub(r"__EMOTION__", "", prediction)
-    prediction = re.sub(r"\b__[^_ ]*__\b", "", prediction)
-    prediction = re.sub(r"\bloc-([^ ]*)\b", r"\1", prediction)
-    prediction = re.sub(r"\bcl-([^ ]*)\b", r"\1", prediction)
-    prediction = re.sub(r"\b([^ ]*)-PLUSPLUS\b", r"\1", prediction)
-    prediction = re.sub(r"\b([A-Z][A-Z]*)RAUM\b", r"\1", prediction)
-    prediction = re.sub(r"WIE AUSSEHEN", "WIE-AUSSEHEN", prediction)
-    prediction = re.sub(r"^([A-Z]) ([A-Z][+ ])", r"\1+\2", prediction)
-    prediction = re.sub(r"[ +]([A-Z]) ([A-Z]) ", r" \1+\2 ", prediction)
-    prediction = re.sub(r"([ +][A-Z]) ([A-Z][ +])", r"\1+\2", prediction)
-    prediction = re.sub(r"([ +][A-Z]) ([A-Z][ +])", r"\1+\2", prediction)
-    prediction = re.sub(r"([ +][A-Z]) ([A-Z][ +])", r"\1+\2", prediction)
+    prediction = re.sub(r"__LEFTHAND__", "", prediction) #not in gls.vocab
+    prediction = re.sub(r"__EPENTHESIS__", "", prediction) # not in gls.vocab
+    prediction = re.sub(r"__EMOTION__", "", prediction) #not in gls.vocab
+    prediction = re.sub(r"\b__[^_ ]*__\b", "", prediction) # not in gls.vocab
+    prediction = re.sub(r"\bloc-([^ ]*)\b", r"\1", prediction) # not in gls.vocab (remove loc-)
+    prediction = re.sub(r"\bcl-([^ ]*)\b", r"\1", prediction) # not in gls.vocab (remove cl-)
+    prediction = re.sub(r"\b([^ ]*)-PLUSPLUS\b", r"\1", prediction) # not in gls.vocab (remove -plusplus)
+    prediction = re.sub(r"\b([A-Z][A-Z]*)RAUM\b", r"\1", prediction) #only \bRAUM\b exists in gls annotations (remove RAUM)
+    prediction = re.sub(r"WIE AUSSEHEN", "WIE-AUSSEHEN", prediction) # not in gls.vocab
+    #combine single character with '+'
+    prediction = re.sub(r"^([A-Z]) ([A-Z][+ ])", r"\1+\2", 
+            prediction) #"A B+","A B "  -> "A+B+" "A+B" #must be at the start of the string
+    prediction = re.sub(r"[ +]([A-Z]) ([A-Z]) ", r" \1+\2 ", prediction) # "+A B " -> "A+B"
+    prediction = re.sub(r"([ +][A-Z]) ([A-Z][ +])", r"\1+\2", prediction) # " A B "->" A+B "
+    prediction = re.sub(r"([ +][A-Z]) ([A-Z][ +])", r"\1+\2", prediction) # " 
+    prediction = re.sub(r"([ +][A-Z]) ([A-Z][ +])", r"\1+\2", prediction) # "REPEAT?" " A B C "  --> " A+B+C "
     prediction = re.sub(r"([ +]SCH) ([A-Z][ +])", r"\1+\2", prediction)
     prediction = re.sub(r"([ +]NN) ([A-Z][ +])", r"\1+\2", prediction)
     prediction = re.sub(r"([ +][A-Z]) (NN[ +])", r"\1+\2", prediction)
     prediction = re.sub(r"([ +][A-Z]) ([A-Z])$", r"\1+\2", prediction)
-    prediction = re.sub(r" +", " ", prediction)
+    prediction = re.sub(r" +", " ", prediction) #remove single +
     prediction = re.sub(r"(?<![\w-])(\b[A-Z]+(?![\w-])) \1(?![\w-])", r"\1", prediction)
     prediction = re.sub(r"(?<![\w-])(\b[A-Z]+(?![\w-])) \1(?![\w-])", r"\1", prediction)
-    prediction = re.sub(r"(?<![\w-])(\b[A-Z]+(?![\w-])) \1(?![\w-])", r"\1", prediction)
-    prediction = re.sub(r"(?<![\w-])(\b[A-Z]+(?![\w-])) \1(?![\w-])", r"\1", prediction)
-    prediction = re.sub(r" +", " ", prediction)
+    prediction = re.sub(r"(?<![\w-])(\b[A-Z]+(?![\w-])) \1(?![\w-])", r"\1", prediction)## 把重复出现的 连续大写字母 合为一个 e.g. ‘BBC BBC BBC ’ -> 'BBC
+    prediction = re.sub(r"(?<![\w-])(\b[A-Z]+(?![\w-])) \1(?![\w-])", r"\1", prediction) ##???
+    prediction = re.sub(r" +", " ", prediction) #remove lonely +  
 
     # Remove white spaces and repetitions
+    # remove white spaces? split()!=split(" ")
     prediction = " ".join(
         " ".join(i[0] for i in groupby(prediction.split(" "))).split()
     )

@@ -28,7 +28,10 @@ def main():
     if args.mode == "train":
         train(cfg_file=args.config_path)
     elif args.mode == "test":
-        test(cfg_file=args.config_path, ckpt=args.ckpt, output_path=args.output_path)
+        from signjoey.helpers import make_logger, make_model_dir
+        make_model_dir(args.output_path, overwrite=True)
+        test_logger = make_logger(model_dir=args.output_path)
+        test(cfg_file=args.config_path, ckpt=args.ckpt, output_path=args.output_path, logger=test_logger)
     else:
         raise ValueError("Unknown mode")
 
