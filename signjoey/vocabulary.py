@@ -226,6 +226,8 @@ def build_vocab(
                 raise ValueError("Unknown field type")
 
         counter = Counter(tokens)
+        sorted_counter = sorted(counter.items(), key=lambda tup: tup[0])
+        sorted_counter = {w:f for w,f in sorted_counter}
         if min_freq > -1:
             counter = filter_min(counter, min_freq)
         vocab_tokens = sort_and_cut(counter, max_size)
@@ -245,4 +247,4 @@ def build_vocab(
         if i != vocab.DEFAULT_UNK_ID():
             assert not vocab.is_unk(s)
 
-    return vocab
+    return vocab, sorted_counter

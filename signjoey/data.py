@@ -128,14 +128,14 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
     gls_vocab_file = data_cfg.get("gls_vocab", None)
     txt_vocab_file = data_cfg.get("txt_vocab", None)
 
-    gls_vocab = build_vocab(
+    gls_vocab, gls_counter = build_vocab(
         field="gls",
         min_freq=gls_min_freq,
         max_size=gls_max_size,
         dataset=train_data,
         vocab_file=gls_vocab_file,
     )
-    txt_vocab = build_vocab(
+    txt_vocab, txt_counter = build_vocab(
         field="txt",
         min_freq=txt_min_freq,
         max_size=txt_max_size,
@@ -172,7 +172,7 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
 
     gls_field.vocab = gls_vocab
     txt_field.vocab = txt_vocab
-    return train_data, dev_data, test_data, gls_vocab, txt_vocab
+    return train_data, dev_data, test_data, gls_vocab, txt_vocab, gls_counter, txt_counter
 
 
 # TODO (Cihan): I don't like this use of globals.

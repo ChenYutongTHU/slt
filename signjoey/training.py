@@ -208,8 +208,10 @@ class TrainManager:
         self.gls_silence_token = self.model.gls_vocab.stoi[SIL_TOKEN]
         assert self.gls_silence_token == 0
 
+        self.ctcloss_level = train_config.get('ctcloss_level', 'token')
         self.recognition_loss_function = torch.nn.CTCLoss(
-            blank=self.gls_silence_token, zero_infinity=True
+            blank=self.gls_silence_token, zero_infinity=True,
+            reduction='mean' if self.ctcloss_level=='token' else 'sum'
         )
         self.recognition_loss_weight = train_config.get("recognition_loss_weight", 1.0)
         self.eval_recognition_beam_size = train_config.get(
@@ -771,8 +773,19 @@ class TrainManager:
         # TODO (Cihan): Add Gloss Token normalization (?)
         #   I think they are already being normalized by batch
         #   I need to think about if I want to normalize them by token.
+
+        # (Yutong):
+        # ctcloss_level: 
+        # sentence reduction='sum'  / num_sent (batch_size)*(batch_multiplier)
+        # token  reduction='mean' / (batch_multiplier)
         if self.do_recognition:
-            normalized_recognition_loss = recognition_loss / self.batch_multiplier
+            if self.ctcloss_level=='sentence':
+                gls_normalization_factor = batch.num_seqs
+            else: #'token'
+                gls_normalization_factor = 1
+            normalized_recognition_loss = recognition_loss / (
+                gls_normalization_factor * self.batch_multiplier
+            )
         else:
             normalized_recognition_loss = 0
 
@@ -974,7 +987,7 @@ def train(cfg_file: str) -> None:
     # set the random seed
     set_seed(seed=cfg["training"].get("random_seed", 42))
 
-    train_data, dev_data, test_data, gls_vocab, txt_vocab = load_data(
+    train_data, dev_data, test_data, gls_vocab, txt_vocab, gls_counter, txt_counter = load_data(
         data_cfg=cfg["data"]
     )
 
@@ -1017,6 +1030,13 @@ def train(cfg_file: str) -> None:
     gls_vocab.to_file(gls_vocab_file)
     txt_vocab_file = "{}/txt.vocab".format(cfg["training"]["model_dir"])
     txt_vocab.to_file(txt_vocab_file)
+    gls_counter_file = "{}/gls.counter".format(cfg["training"]["model_dir"])
+    import json
+    with open(gls_counter_file,'w') as f:
+        json.dump(gls_counter, f)
+    txt_counter_file = "{}/txt.counter".format(cfg["training"]["model_dir"])
+    with open(txt_counter_file,'w') as f:
+        json.dump(txt_counter, f)
 
     # train the model
     trainer.train_and_validate(train_data=train_data, valid_data=dev_data)
