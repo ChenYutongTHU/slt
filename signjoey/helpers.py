@@ -57,7 +57,8 @@ def make_logger(model_dir: str, log_file: str = "train.log") -> Logger:
         fh.setFormatter(formatter)
         if platform == "linux":
             sh = logging.StreamHandler()
-            sh.setLevel(logging.INFO)
+            if not is_main_process():
+                sh.setLevel(logging.ERROR)
             sh.setFormatter(formatter)
             logging.getLogger("").addHandler(sh)
         logger.info("Hello! This is Joey-NMT.")
@@ -258,11 +259,18 @@ def freeze_params(module: nn.Module):
 
 
 def symlink_update(target, link_name):
-    try:
-        os.symlink(target, link_name)
-    except FileExistsError as e:
-        if e.errno == errno.EEXIST:
-            os.remove(link_name)
-            os.symlink(target, link_name)
-        else:
-            raise e
+    os.system('cp {} {}'.format(target, link_name))
+    # try:
+    #     os.symlink(target, link_name)
+    # except FileExistsError as e:
+    #     if e.errno == errno.EEXIST:
+    #         os.remove(link_name)
+    #         os.symlink(target, link_name)
+    #     else:
+    #         raise e
+
+def is_main_process():
+    return 'WORLD_SIZE' not in os.environ or os.environ['WORLD_SIZE']=='1' or os.environ['LOCAL_RANK']=='0'
+
+
+

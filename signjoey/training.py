@@ -1,17 +1,22 @@
 #!/usr/bin/env python
+import warnings
+warnings.filterwarnings("ignore")
+
+from torch.nn.parallel import DistributedDataParallel as DDP, distributed
 import torch
 
 torch.backends.cudnn.deterministic = True
 
 import argparse
 import numpy as np
-import os
+import os, sys
 import shutil
 import time
 import queue
-
+sys.path.append(os.getcwd())#slt dir
+import signjoey
 from signjoey.model import build_model
-from signjoey.batch import Batch
+from signjoey.batch import Batch, Batch_from_examples
 from signjoey.helpers import (
     log_data_info,
     load_config,
@@ -21,6 +26,7 @@ from signjoey.helpers import (
     make_logger,
     set_seed,
     symlink_update,
+    is_main_process
 )
 from signjoey.model import SignModel
 from signjoey.prediction import validate_on_data
@@ -31,6 +37,7 @@ from signjoey.prediction import test
 from signjoey.metrics import wer_single
 from signjoey.vocabulary import SIL_TOKEN
 from torch import Tensor
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from torchtext.data import Dataset
 from typing import List, Dict
@@ -41,7 +48,7 @@ class TrainManager:
     """ Manages training loop, validations, learning rate scheduling
     and early stopping."""
 
-    def __init__(self, model: SignModel, config: dict) -> None:
+    def __init__(self, model: SignModel, config: dict, distributed=False) -> None:
         """
         Creates a new TrainManager for a model, specified as in configuration.
 
@@ -49,16 +56,26 @@ class TrainManager:
         :param config: dictionary containing the training configurations
         """
         train_config = config["training"]
-
+        self.distributed = distributed
         # files for logging and storing
-        self.model_dir = make_model_dir(
-            train_config["model_dir"], overwrite=train_config.get("overwrite", False)
-        )
-        self.logger = make_logger(model_dir=self.model_dir)
-        self.logging_freq = train_config.get("logging_freq", 100)
-        self.valid_report_file = "{}/validations.txt".format(self.model_dir)
-        self.tb_writer = SummaryWriter(log_dir=self.model_dir + "/tensorboard/")
+        if is_main_process():
+            self.model_dir = make_model_dir(
+                train_config["model_dir"], overwrite=train_config.get("overwrite", False)
+            )
+        else:
+            self.model_dir = train_config["model_dir"]
+        
+        if self.distributed:
+            torch.distributed.barrier()
 
+        self.logger = make_logger(model_dir=self.model_dir, log_file='train.rank{}.log'.format(os.environ['RANK']))
+        self.logging_freq = train_config.get("logging_freq", 100)
+
+        if is_main_process():
+            self.valid_report_file = "{}/validations.txt".format(self.model_dir)
+            self.tb_writer = SummaryWriter(log_dir=self.model_dir + "/tensorboard/")
+        else:
+            self.tb_writer = SummaryWriter(log_dir=self.model_dir + "/tensorboard_rank{}/".format(os.environ['LOCAL_RANK']))
         # input
         self.feature_size = (
             sum(config["data"]["feature_size"])
@@ -279,7 +296,8 @@ class TrainManager:
 
         self.ckpt_queue.put(model_path)
 
-        # create/modify symbolic link for best checkpoint
+        # create/modify symbolic link for best checkpoint  
+        # since symlink_update is not supported in azure storage, we use copy instead
         symlink_update(
             "{}.ckpt".format(self.steps), "{}/best.ckpt".format(self.model_dir)
         )
@@ -341,22 +359,36 @@ class TrainManager:
         if self.use_cuda:
             self.model.cuda()
 
-    def train_and_validate(self, train_data: Dataset, valid_data: Dataset) -> None:
+    def train_and_validate(self, train_data: Dataset, valid_data: Dataset, distributed=False) -> None:
         """
         Train the model and validate it from time to time on the validation set.
 
         :param train_data: training data
         :param valid_data: validation data
         """
-        train_iter = make_data_iter(
+        train_iter, train_sampler = make_data_iter(
             train_data,
+            collate_fn=lambda x: Batch_from_examples(
+                    is_train=True,
+                    example_list=x,
+                    txt_pad_index=self.txt_pad_index,
+                    sgn_dim=self.feature_size,
+                    dataset=train_data,
+                    use_cuda=self.use_cuda,
+                    frame_subsampling_ratio=self.frame_subsampling_ratio,
+                    random_frame_subsampling=self.random_frame_subsampling,
+                    random_frame_masking_ratio=self.random_frame_masking_ratio,
+                ),
             batch_size=self.batch_size,
             batch_type=self.batch_type,
-            train=True,
+            distributed=distributed,
             shuffle=self.shuffle,
         )
         epoch_no = None
         for epoch_no in range(self.epochs):
+            if distributed:
+                train_sampler.set_epoch(epoch_no)
+                
             self.logger.info("EPOCH %d", epoch_no + 1)
 
             if self.scheduler is not None and self.scheduler_step_at == "epoch":
@@ -377,17 +409,17 @@ class TrainManager:
             for batch in iter(train_iter):
                 # reactivate training
                 # create a Batch object from torchtext batch
-                batch = Batch(
-                    is_train=True,
-                    torch_batch=batch,
-                    txt_pad_index=self.txt_pad_index,
-                    sgn_dim=self.feature_size,
-                    use_cuda=self.use_cuda,
-                    frame_subsampling_ratio=self.frame_subsampling_ratio,
-                    random_frame_subsampling=self.random_frame_subsampling,
-                    random_frame_masking_ratio=self.random_frame_masking_ratio,
-                )
-
+                # batch = Batch(
+                #     is_train=True,
+                #     torch_batch=batch,
+                #     txt_pad_index=self.txt_pad_index,
+                #     sgn_dim=self.feature_size,
+                #     use_cuda=self.use_cuda,
+                #     frame_subsampling_ratio=self.frame_subsampling_ratio,
+                #     random_frame_subsampling=self.random_frame_subsampling,
+                #     random_frame_masking_ratio=self.random_frame_masking_ratio,
+                # )
+                batch._make_cuda()
                 # only update every batch_multiplier batches
                 # see https://medium.com/@davidlmorton/
                 # increasing-mini-batch-size-without-increasing-
@@ -399,15 +431,17 @@ class TrainManager:
                 )
 
                 if self.do_recognition:
-                    self.tb_writer.add_scalar(
-                        "train/train_recognition_loss", recognition_loss, self.steps
-                    )
+                    if is_main_process():
+                        self.tb_writer.add_scalar(
+                            "train/train_recognition_loss", recognition_loss, self.steps
+                        )
                     epoch_recognition_loss += recognition_loss.detach().cpu().numpy()
 
                 if self.do_translation:
-                    self.tb_writer.add_scalar(
-                        "train/train_translation_loss", translation_loss, self.steps
-                    )
+                    if is_main_process():
+                        self.tb_writer.add_scalar(
+                            "train/train_translation_loss", translation_loss, self.steps
+                        )
                     epoch_translation_loss += translation_loss.detach().cpu().numpy()
 
                 count = self.batch_multiplier if update else count
@@ -457,120 +491,139 @@ class TrainManager:
 
                 # validate on the entire dev set
                 if self.steps % self.validation_freq == 0 and update:
+                    self.logger.info('Validate on data on process rank 0')
                     valid_start_time = time.time()
-                    # TODO (Cihan): There must be a better way of passing
-                    #   these recognition only and translation only parameters!
-                    #   Maybe have a NamedTuple with optional fields?
-                    #   Hmm... Future Cihan's problem.
-                    val_res = validate_on_data(
-                        model=self.model,
-                        data=valid_data,
-                        batch_size=self.eval_batch_size,
-                        use_cuda=self.use_cuda,
-                        batch_type=self.eval_batch_type,
-                        dataset_version=self.dataset_version,
-                        sgn_dim=self.feature_size,
-                        txt_pad_index=self.txt_pad_index,
-                        # Recognition Parameters
-                        do_recognition=self.do_recognition,
-                        recognition_loss_function=self.recognition_loss_function
-                        if self.do_recognition
-                        else None,
-                        recognition_loss_weight=self.recognition_loss_weight
-                        if self.do_recognition
-                        else None,
-                        recognition_beam_size=self.eval_recognition_beam_size
-                        if self.do_recognition
-                        else None,
-                        # Translation Parameters
-                        do_translation=self.do_translation,
-                        translation_loss_function=self.translation_loss_function
-                        if self.do_translation
-                        else None,
-                        translation_max_output_length=self.translation_max_output_length
-                        if self.do_translation
-                        else None,
-                        level=self.level if self.do_translation else None,
-                        translation_loss_weight=self.translation_loss_weight
-                        if self.do_translation
-                        else None,
-                        translation_beam_size=self.eval_translation_beam_size
-                        if self.do_translation
-                        else None,
-                        translation_beam_alpha=self.eval_translation_beam_alpha
-                        if self.do_translation
-                        else None,
-                        frame_subsampling_ratio=self.frame_subsampling_ratio,
-                    )
-                    self.model.train()
+                    if is_main_process():
+                        self.logger.info('validate_on_data!')
+                        # TODO (Cihan): There must be a better way of passing
+                        #   these recognition only and translation only parameters!
+                        #   Maybe have a NamedTuple with optional fields?
+                        #   Hmm... Future Cihan's problem.
+                        val_res = validate_on_data(
+                            model=self.model,
+                            data=valid_data,
+                            batch_size=self.eval_batch_size,
+                            use_cuda=self.use_cuda,
+                            batch_type=self.eval_batch_type,
+                            dataset_version=self.dataset_version,
+                            sgn_dim=self.feature_size,
+                            txt_pad_index=self.txt_pad_index,
+                            # Recognition Parameters
+                            do_recognition=self.do_recognition,
+                            recognition_loss_function=self.recognition_loss_function
+                            if self.do_recognition
+                            else None,
+                            recognition_loss_weight=self.recognition_loss_weight
+                            if self.do_recognition
+                            else None,
+                            recognition_beam_size=self.eval_recognition_beam_size
+                            if self.do_recognition
+                            else None,
+                            # Translation Parameters
+                            do_translation=self.do_translation,
+                            translation_loss_function=self.translation_loss_function
+                            if self.do_translation
+                            else None,
+                            translation_max_output_length=self.translation_max_output_length
+                            if self.do_translation
+                            else None,
+                            level=self.level if self.do_translation else None,
+                            translation_loss_weight=self.translation_loss_weight
+                            if self.do_translation
+                            else None,
+                            translation_beam_size=self.eval_translation_beam_size
+                            if self.do_translation
+                            else None,
+                            translation_beam_alpha=self.eval_translation_beam_alpha
+                            if self.do_translation
+                            else None,
+                            frame_subsampling_ratio=self.frame_subsampling_ratio,
+                        )
+                        self.model.train()
 
-                    if self.do_recognition:
-                        # Log Losses and ppl
-                        self.tb_writer.add_scalar(
-                            "valid/valid_recognition_loss",
-                            val_res["valid_recognition_loss"],
-                            self.steps,
-                        )
-                        self.tb_writer.add_scalar(
-                            "valid/wer", val_res["valid_scores"]["wer"], self.steps
-                        )
-                        self.tb_writer.add_scalars(
-                            "valid/wer_scores",
-                            val_res["valid_scores"]["wer_scores"],
-                            self.steps,
-                        )
+                        if self.do_recognition:
+                            # Log Losses and ppl
+                            self.tb_writer.add_scalar(
+                                "valid/valid_recognition_loss",
+                                val_res["valid_recognition_loss"],
+                                self.steps,
+                            )
+                            self.tb_writer.add_scalar(
+                                "valid/wer", val_res["valid_scores"]["wer"], self.steps
+                            )
+                            self.tb_writer.add_scalars(
+                                "valid/wer_scores",
+                                val_res["valid_scores"]["wer_scores"],
+                                self.steps,
+                            )
 
-                    if self.do_translation:
-                        self.tb_writer.add_scalar(
-                            "valid/valid_translation_loss",
-                            val_res["valid_translation_loss"],
-                            self.steps,
-                        )
-                        self.tb_writer.add_scalar(
-                            "valid/valid_ppl", val_res["valid_ppl"], self.steps
-                        )
+                        if self.do_translation:
+                            self.tb_writer.add_scalar(
+                                "valid/valid_translation_loss",
+                                val_res["valid_translation_loss"],
+                                self.steps,
+                            )
+                            self.tb_writer.add_scalar(
+                                "valid/valid_ppl", val_res["valid_ppl"], self.steps
+                            )
 
-                        # Log Scores
-                        self.tb_writer.add_scalar(
-                            "valid/chrf", val_res["valid_scores"]["chrf"], self.steps
-                        )
-                        self.tb_writer.add_scalar(
-                            "valid/rouge", val_res["valid_scores"]["rouge"], self.steps
-                        )
-                        self.tb_writer.add_scalar(
-                            "valid/bleu", val_res["valid_scores"]["bleu"], self.steps
-                        )
-                        self.tb_writer.add_scalars(
-                            "valid/bleu_scores",
-                            val_res["valid_scores"]["bleu_scores"],
-                            self.steps,
-                        )
+                            # Log Scores
+                            self.tb_writer.add_scalar(
+                                "valid/chrf", val_res["valid_scores"]["chrf"], self.steps
+                            )
+                            self.tb_writer.add_scalar(
+                                "valid/rouge", val_res["valid_scores"]["rouge"], self.steps
+                            )
+                            self.tb_writer.add_scalar(
+                                "valid/bleu", val_res["valid_scores"]["bleu"], self.steps
+                            )
+                            self.tb_writer.add_scalars(
+                                "valid/bleu_scores",
+                                val_res["valid_scores"]["bleu_scores"],
+                                self.steps,
+                            )
 
-                    if self.early_stopping_metric == "recognition_loss":
-                        assert self.do_recognition
-                        ckpt_score = val_res["valid_recognition_loss"]
-                    elif self.early_stopping_metric == "translation_loss":
-                        assert self.do_translation
-                        ckpt_score = val_res["valid_translation_loss"]
-                    elif self.early_stopping_metric in ["ppl", "perplexity"]:
-                        assert self.do_translation
-                        ckpt_score = val_res["valid_ppl"]
+                        if self.early_stopping_metric == "recognition_loss":
+                            assert self.do_recognition
+                            ckpt_score = val_res["valid_recognition_loss"]
+                        elif self.early_stopping_metric == "translation_loss":
+                            assert self.do_translation
+                            ckpt_score = val_res["valid_translation_loss"]
+                        elif self.early_stopping_metric in ["ppl", "perplexity"]:
+                            assert self.do_translation
+                            ckpt_score = val_res["valid_ppl"]
+                        else:
+                            ckpt_score = val_res["valid_scores"][self.eval_metric]
+
+                        #broadcast to other processes
+                        self.logger.info(
+                            'broadcast from 0 to others: ckpt_score={}'.format(float(ckpt_score)))
+                        torch.distributed.broadcast(torch.tensor(ckpt_score).cuda(), src=0)                      
+
                     else:
-                        ckpt_score = val_res["valid_scores"][self.eval_metric]
+                        ckpt_score = torch.empty(1,).cuda()
+                        torch.distributed.broadcast(ckpt_score, src=0)
+                        self.logger.info('broadcast from 0 to {}: ckpt_score {}'.format(os.environ['LOCAL_RANK'],float(ckpt_score)))
+                    
+                    if distributed:
+                        torch.distributed.barrier()
 
                     new_best = False
                     if self.is_best(ckpt_score):
                         self.best_ckpt_score = ckpt_score
-                        self.best_all_ckpt_scores = val_res["valid_scores"]
+                        self.best_all_ckpt_scores = val_res["valid_scores"] if is_main_process() else None
                         self.best_ckpt_iteration = self.steps
                         self.logger.info(
                             "Hooray! New best validation result [%s]!",
                             self.early_stopping_metric,
                         )
                         if self.ckpt_queue.maxsize > 0:
-                            self.logger.info("Saving new checkpoint.")
                             new_best = True
-                            self._save_checkpoint()
+                            if is_main_process():
+                                self.logger.info("Saving new checkpoint.")
+                                self._save_checkpoint()
+                            if distributed:
+                                torch.distributed.barrier()
 
                     if (
                         self.scheduler is not None
@@ -579,119 +632,174 @@ class TrainManager:
                         prev_lr = self.scheduler.optimizer.param_groups[0]["lr"]
                         self.scheduler.step(ckpt_score)
                         now_lr = self.scheduler.optimizer.param_groups[0]["lr"]
+                        
+                        if is_main_process():
+                            torch.distributed.broadcast(torch.tensor(now_lr).cuda(), src=0)
+                            self.logger.info('broadcast from 0 to others: now_lr={}'.format(float(now_lr)))
+                        else:
+                            now_lr0 = torch.empty(1,).cuda()
+                            torch.distributed.broadcast(now_lr0, src=0) 
+                            self.logger.info('broadcast from 0 to {}: now_lr0={}'.format(os.environ['LOCAL_RANK'], float(now_lr0)))
+                            #assert now_lr0==now_lr  
+                        if distributed:
+                            torch.distributed.barrier()
 
                         # if prev_lr != now_lr:
                         #     if self.last_best_lr != prev_lr:
                         #         self.stop = True
 
-                    # append to validation report
-                    self._add_report(
-                        valid_scores=val_res["valid_scores"],
-                        valid_recognition_loss=val_res["valid_recognition_loss"]
-                        if self.do_recognition
-                        else None,
-                        valid_translation_loss=val_res["valid_translation_loss"]
-                        if self.do_translation
-                        else None,
-                        valid_ppl=val_res["valid_ppl"] if self.do_translation else None,
-                        eval_metric=self.eval_metric,
-                        new_best=new_best,
-                    )
+                    current_lr = -1
+                    # ignores other param groups for now
+                    for param_group in self.optimizer.param_groups:
+                        current_lr = param_group["lr"]
+                    if new_best:
+                        self.last_best_lr = current_lr
+                    if current_lr < self.learning_rate_min:
+                        self.stop = True
+
+                    self.tb_writer.add_scalar("train/learning_rate", current_lr,  self.steps)
+                    
+                    if is_main_process():
+                        self.logger.info('broadcast from 0 to others: new_best={}'.format(new_best))
+                        torch.distributed.broadcast(torch.tensor(int(new_best)).cuda(), src=0)
+                    else:
+                        new_best0 = torch.empty(1,).cuda()
+                        torch.distributed.broadcast(new_best0, src=0)
+                        self.logger.info('broadcast from 0 to {}: new_best0={}'.format(os.environ['LOCAL_RANK'], bool(int(new_best0)))) 
+                        self.logger.info('                      : new_best={}'.format(new_best))
+                        #assert new_best0==new_best, (new_best0, new_best)
+                    if distributed:
+                        torch.distributed.barrier()
+                    
+
+                    if is_main_process():
+                        self.logger.info('broadcast from 0 to others: stop={}'.format(self.stop))
+                        torch.distributed.broadcast(torch.tensor(int(self.stop)).cuda(), src=0)
+                    else:
+                        stop0 = torch.empty(1,).cuda()
+                        torch.distributed.broadcast(stop0, src=0)  
+                        self.logger.info('broadcast from 0 to {}: stop0={} '.format(os.environ['LOCAL_RANK'], int(stop0)))    
+                        self.logger.info('                      : stop={} '.format(self.stop))
+                        #assert stop0==self.stop, (stop0, self.stop)
+                    if distributed:
+                        torch.distributed.barrier()
+
                     valid_duration = time.time() - valid_start_time
                     total_valid_duration += valid_duration
-                    self.logger.info(
-                        "Validation result at epoch %3d, step %8d: duration: %.4fs\n\t"
-                        "Recognition Beam Size: %d\t"
-                        "Translation Beam Size: %d\t"
-                        "Translation Beam Alpha: %d\n\t"
-                        "Recognition Loss: %4.5f\t"
-                        "Translation Loss: %4.5f\t"
-                        "PPL: %4.5f\n\t"
-                        "Eval Metric: %s\n\t"
-                        "WER %3.2f\t(DEL: %3.2f,\tINS: %3.2f,\tSUB: %3.2f)\n\t"
-                        "BLEU-4 %.2f\t(BLEU-1: %.2f,\tBLEU-2: %.2f,\tBLEU-3: %.2f,\tBLEU-4: %.2f)\n\t"
-                        "CHRF %.2f\t"
-                        "ROUGE %.2f",
-                        epoch_no + 1,
-                        self.steps,
-                        valid_duration,
-                        self.eval_recognition_beam_size if self.do_recognition else -1,
-                        self.eval_translation_beam_size if self.do_translation else -1,
-                        self.eval_translation_beam_alpha if self.do_translation else -1,
-                        val_res["valid_recognition_loss"]
-                        if self.do_recognition
-                        else -1,
-                        val_res["valid_translation_loss"]
-                        if self.do_translation
-                        else -1,
-                        val_res["valid_ppl"] if self.do_translation else -1,
-                        self.eval_metric.upper(),
-                        # WER
-                        val_res["valid_scores"]["wer"] if self.do_recognition else -1,
-                        val_res["valid_scores"]["wer_scores"]["del_rate"]
-                        if self.do_recognition
-                        else -1,
-                        val_res["valid_scores"]["wer_scores"]["ins_rate"]
-                        if self.do_recognition
-                        else -1,
-                        val_res["valid_scores"]["wer_scores"]["sub_rate"]
-                        if self.do_recognition
-                        else -1,
-                        # BLEU
-                        val_res["valid_scores"]["bleu"] if self.do_translation else -1,
-                        val_res["valid_scores"]["bleu_scores"]["bleu1"]
-                        if self.do_translation
-                        else -1,
-                        val_res["valid_scores"]["bleu_scores"]["bleu2"]
-                        if self.do_translation
-                        else -1,
-                        val_res["valid_scores"]["bleu_scores"]["bleu3"]
-                        if self.do_translation
-                        else -1,
-                        val_res["valid_scores"]["bleu_scores"]["bleu4"]
-                        if self.do_translation
-                        else -1,
-                        # Other
-                        val_res["valid_scores"]["chrf"] if self.do_translation else -1,
-                        val_res["valid_scores"]["rouge"] if self.do_translation else -1,
-                    )
-
-                    self._log_examples(
-                        sequences=[s for s in valid_data.sequence],
-                        gls_references=val_res["gls_ref"]
-                        if self.do_recognition
-                        else None,
-                        gls_hypotheses=val_res["gls_hyp"]
-                        if self.do_recognition
-                        else None,
-                        txt_references=val_res["txt_ref"]
-                        if self.do_translation
-                        else None,
-                        txt_hypotheses=val_res["txt_hyp"]
-                        if self.do_translation
-                        else None,
-                    )
-
-                    valid_seq = [s for s in valid_data.sequence]
-                    # store validation set outputs and references
-                    if self.do_recognition:
-                        self._store_outputs(
-                            "dev.hyp.gls", valid_seq, val_res["gls_hyp"], "gls"
+                    # append to validation report
+                    if is_main_process():
+                        self._add_report(
+                            current_lr=current_lr,
+                            valid_scores=val_res["valid_scores"],
+                            valid_recognition_loss=val_res["valid_recognition_loss"]
+                            if self.do_recognition
+                            else None,
+                            valid_translation_loss=val_res["valid_translation_loss"]
+                            if self.do_translation
+                            else None,
+                            valid_ppl=val_res["valid_ppl"] if self.do_translation else None,
+                            eval_metric=self.eval_metric,
+                            new_best=new_best,
                         )
-                        self._store_outputs(
-                            "references.dev.gls", valid_seq, val_res["gls_ref"]
+                        self.logger.info(
+                            "Validation result at epoch %3d, step %8d: duration: %.4fs\n\t"
+                            "Recognition Beam Size: %d\t"
+                            "Translation Beam Size: %d\t"
+                            "Translation Beam Alpha: %d\n\t"
+                            "Recognition Loss: %4.5f\t"
+                            "Translation Loss: %4.5f\t"
+                            "PPL: %4.5f\n\t"
+                            "Eval Metric: %s\n\t"
+                            "WER %3.2f\t(DEL: %3.2f,\tINS: %3.2f,\tSUB: %3.2f)\n\t"
+                            "BLEU-4 %.2f\t(BLEU-1: %.2f,\tBLEU-2: %.2f,\tBLEU-3: %.2f,\tBLEU-4: %.2f)\n\t"
+                            "CHRF %.2f\t"
+                            "ROUGE %.2f",
+                            epoch_no + 1,
+                            self.steps,
+                            valid_duration,
+                            self.eval_recognition_beam_size if self.do_recognition else -1,
+                            self.eval_translation_beam_size if self.do_translation else -1,
+                            self.eval_translation_beam_alpha if self.do_translation else -1,
+                            val_res["valid_recognition_loss"]
+                            if self.do_recognition
+                            else -1,
+                            val_res["valid_translation_loss"]
+                            if self.do_translation
+                            else -1,
+                            val_res["valid_ppl"] if self.do_translation else -1,
+                            self.eval_metric.upper(),
+                            # WER
+                            val_res["valid_scores"]["wer"] if self.do_recognition else -1,
+                            val_res["valid_scores"]["wer_scores"]["del_rate"]
+                            if self.do_recognition
+                            else -1,
+                            val_res["valid_scores"]["wer_scores"]["ins_rate"]
+                            if self.do_recognition
+                            else -1,
+                            val_res["valid_scores"]["wer_scores"]["sub_rate"]
+                            if self.do_recognition
+                            else -1,
+                            # BLEU
+                            val_res["valid_scores"]["bleu"] if self.do_translation else -1,
+                            val_res["valid_scores"]["bleu_scores"]["bleu1"]
+                            if self.do_translation
+                            else -1,
+                            val_res["valid_scores"]["bleu_scores"]["bleu2"]
+                            if self.do_translation
+                            else -1,
+                            val_res["valid_scores"]["bleu_scores"]["bleu3"]
+                            if self.do_translation
+                            else -1,
+                            val_res["valid_scores"]["bleu_scores"]["bleu4"]
+                            if self.do_translation
+                            else -1,
+                            # Other
+                            val_res["valid_scores"]["chrf"] if self.do_translation else -1,
+                            val_res["valid_scores"]["rouge"] if self.do_translation else -1,
                         )
 
-                    if self.do_translation:
-                        self._store_outputs(
-                            "dev.hyp.txt", valid_seq, val_res["txt_hyp"], "txt"
-                        )
-                        self._store_outputs(
-                            "references.dev.txt", valid_seq, val_res["txt_ref"]
+                        self._log_examples(
+                            sequences=[s for s in valid_data.sequence],
+                            gls_references=val_res["gls_ref"]
+                            if self.do_recognition
+                            else None,
+                            gls_hypotheses=val_res["gls_hyp"]
+                            if self.do_recognition
+                            else None,
+                            txt_references=val_res["txt_ref"]
+                            if self.do_translation
+                            else None,
+                            txt_hypotheses=val_res["txt_hyp"]
+                            if self.do_translation
+                            else None,
                         )
 
-                if self.stop:
+                        valid_seq = [s for s in valid_data.sequence]
+                        # store validation set outputs and references
+                        if self.do_recognition:
+                            self._store_outputs(
+                                "dev.hyp.gls", valid_seq, val_res["gls_hyp"], "gls"
+                            )
+                            self._store_outputs(
+                                "references.dev.gls", valid_seq, val_res["gls_ref"]
+                            )
+
+                        if self.do_translation:
+                                self._store_outputs(
+                                    "dev.hyp.txt", valid_seq, val_res["txt_hyp"], "txt"
+                                )
+                                self._store_outputs(
+                                    "references.dev.txt", valid_seq, val_res["txt_ref"]
+                                )
+                    
+
+                    if distributed:
+                        torch.distributed.barrier()
+                        
+                if self.stop: 
                     break
+                
+
             if self.stop:
                 if (
                     self.scheduler is not None
@@ -717,16 +825,18 @@ class TrainManager:
                 epoch_recognition_loss if self.do_recognition else -1,
                 epoch_translation_loss if self.do_translation else -1,
             )
-        else:
+        else: #executed when the loop is not terminated by 'break'
             self.logger.info("Training ended after %3d epochs.", epoch_no + 1)
+        
+
         self.logger.info(
             "Best validation result at step %8d: %6.2f %s.",
             self.best_ckpt_iteration,
             self.best_ckpt_score,
             self.early_stopping_metric,
         )
-
-        self.tb_writer.close()  # close Tensorboard writer
+        if is_main_process():
+            self.tb_writer.close()  # close Tensorboard writer
 
     def _train_batch(self, batch: Batch, update: bool = True) -> (Tensor, Tensor):
         """
@@ -815,6 +925,7 @@ class TrainManager:
 
     def _add_report(
         self,
+        current_lr,
         valid_scores: Dict,
         valid_recognition_loss: float,
         valid_translation_loss: float,
@@ -832,17 +943,6 @@ class TrainManager:
         :param eval_metric: evaluation metric, e.g. "bleu"
         :param new_best: whether this is a new best model
         """
-        current_lr = -1
-        # ignores other param groups for now
-        for param_group in self.optimizer.param_groups:
-            current_lr = param_group["lr"]
-
-        if new_best:
-            self.last_best_lr = current_lr
-
-        if current_lr < self.learning_rate_min:
-            self.stop = True
-
         with open(self.valid_report_file, "a", encoding="utf-8") as opened_file:
             opened_file.write(
                 "Steps: {}\t"
@@ -987,9 +1087,20 @@ def train(cfg_file: str) -> None:
     # set the random seed
     set_seed(seed=cfg["training"].get("random_seed", 42))
 
+    distributed = 'WORLD_SIZE' in os.environ and int(os.environ['WORLD_SIZE'])>1 
+    if distributed:
+        local_rank = int(os.environ['LOCAL_RANK'])
+        torch.cuda.set_device(local_rank)
+        cfg['device'] = torch.device('cuda:{}'.format(local_rank))
+        device = cfg['device']
+        torch.distributed.init_process_group(backend="nccl", init_method="env://")
+    else: 
+        cfg['device'] = torch.device('cuda:{}'.format(0))
+        device = cfg['device'] #please set CUDA_VISIBLE_DEVICES=? in the script
+
     train_data, dev_data, test_data, gls_vocab, txt_vocab, gls_counter, txt_counter = load_data(
         data_cfg=cfg["data"]
-    )
+        )
 
     # build model and load parameters into it
     do_recognition = cfg["training"].get("recognition_loss_weight", 1.0) > 0.0
@@ -1006,10 +1117,19 @@ def train(cfg_file: str) -> None:
     )
 
     # for training management, e.g. early stopping and model selection
-    trainer = TrainManager(model=model, config=cfg)
+    trainer = TrainManager(model=model, config=cfg, distributed=distributed)
 
     # store copy of original training config in model dir
-    shutil.copy2(cfg_file, trainer.model_dir + "/config.yaml")
+
+    # DDP
+    if distributed:
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+        trainer.logger.info('Distributed training, world_size={}, local_rank={}, \
+                rank={}'.format(os.environ['WORLD_SIZE'], os.environ['LOCAL_RANK'],
+                                          os.environ['RANK']))
+    else:
+        trainer.logger.info('Single-gpu training, gpu_id=0')  
+    
 
     # log all entries of config
     log_cfg(cfg, trainer.logger)
@@ -1025,45 +1145,48 @@ def train(cfg_file: str) -> None:
 
     trainer.logger.info(str(model))
 
-    # store the vocabs
-    gls_vocab_file = "{}/gls.vocab".format(cfg["training"]["model_dir"])
-    gls_vocab.to_file(gls_vocab_file)
-    txt_vocab_file = "{}/txt.vocab".format(cfg["training"]["model_dir"])
-    txt_vocab.to_file(txt_vocab_file)
-    gls_counter_file = "{}/gls.counter".format(cfg["training"]["model_dir"])
-    import json
-    with open(gls_counter_file,'w') as f:
-        json.dump(gls_counter, f)
-    txt_counter_file = "{}/txt.counter".format(cfg["training"]["model_dir"])
-    with open(txt_counter_file,'w') as f:
-        json.dump(txt_counter, f)
+
+    if is_main_process():
+        shutil.copy2(cfg_file, trainer.model_dir + "/config.yaml")
+        # store the vocabs
+        gls_vocab_file = "{}/gls.vocab".format(cfg["training"]["model_dir"])
+        gls_vocab.to_file(gls_vocab_file)
+        txt_vocab_file = "{}/txt.vocab".format(cfg["training"]["model_dir"])
+        txt_vocab.to_file(txt_vocab_file)
+        gls_counter_file = "{}/gls.counter".format(cfg["training"]["model_dir"])
+        import json
+        with open(gls_counter_file,'w') as f:
+            json.dump(gls_counter, f)
+        txt_counter_file = "{}/txt.counter".format(cfg["training"]["model_dir"])
+        with open(txt_counter_file,'w') as f:
+            json.dump(txt_counter, f)
+
+    if distributed:
+        torch.distributed.barrier()
 
     # train the model
-    trainer.train_and_validate(train_data=train_data, valid_data=dev_data)
+    trainer.train_and_validate(train_data=train_data, valid_data=dev_data, distributed=distributed)
     # Delete to speed things up as we don't need training data anymore
     del train_data, dev_data, test_data
 
     # predict with the best model on validation and test
     # (if test data is available)
-    ckpt = "{}/{}.ckpt".format(trainer.model_dir, trainer.best_ckpt_iteration)
-    output_name = "best.IT_{:08d}".format(trainer.best_ckpt_iteration)
-    output_path = os.path.join(trainer.model_dir, output_name)
-    logger = trainer.logger
-    del trainer
-    test(cfg_file, ckpt=ckpt, output_path=output_path, logger=logger)
+    if is_main_process():
+        ckpt = "{}/{}.ckpt".format(trainer.model_dir, trainer.best_ckpt_iteration)
+        output_name = "best.IT_{:08d}".format(trainer.best_ckpt_iteration)
+        output_path = os.path.join(trainer.model_dir, output_name)
+        logger = trainer.logger
+        del trainer
+        test(cfg_file, ckpt=ckpt, output_path=output_path, logger=logger)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("Joey-NMT")
     parser.add_argument(
-        "config",
+        "--config",
         default="configs/default.yaml",
         type=str,
         help="Training configuration file (yaml).",
     )
-    parser.add_argument(
-        "--gpu_id", type=str, default="0", help="gpu to run your job on"
-    )
     args = parser.parse_args()
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
     train(cfg_file=args.config)

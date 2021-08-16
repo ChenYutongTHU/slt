@@ -20,7 +20,7 @@ from signjoey.helpers import (
 )
 from signjoey.metrics import bleu, chrf, rouge, wer_list
 from signjoey.model import build_model, SignModel
-from signjoey.batch import Batch
+from signjoey.batch import Batch, Batch_from_examples
 from signjoey.data import load_data, make_data_iter
 from signjoey.vocabulary import PAD_TOKEN, SIL_TOKEN
 from signjoey.phoenix_utils.phoenix_cleanup import (
@@ -102,12 +102,21 @@ def validate_on_data(
         - decoded_valid: raw validation hypotheses (before post-processing),
         - valid_attention_scores: attention scores for validation hypotheses
     """
-    valid_iter = make_data_iter(
+    valid_iter, valid_sampler = make_data_iter(
         dataset=data,
+        collate_fn=lambda x: Batch_from_examples(
+            is_train=False,
+            example_list=x,
+            dataset=data,
+            txt_pad_index=txt_pad_index,
+            sgn_dim=sgn_dim,
+            use_cuda=use_cuda,
+            frame_subsampling_ratio=frame_subsampling_ratio,
+        ),
         batch_size=batch_size,
         batch_type=batch_type,
         shuffle=False,
-        train=False,
+        distributed=False,
     )
 
     # disable dropout
@@ -122,15 +131,8 @@ def validate_on_data(
         total_num_txt_tokens = 0
         total_num_gls_tokens = 0
         total_num_seqs = 0
-        for valid_batch in iter(valid_iter):
-            batch = Batch(
-                is_train=False,
-                torch_batch=valid_batch,
-                txt_pad_index=txt_pad_index,
-                sgn_dim=sgn_dim,
-                use_cuda=use_cuda,
-                frame_subsampling_ratio=frame_subsampling_ratio,
-            )
+        for batch in iter(valid_iter):
+            batch._make_cuda()
             sort_reverse_index = batch.sort_by_sgn_lengths()
 
             batch_recognition_loss, batch_translation_loss = model.get_loss_for_batch(

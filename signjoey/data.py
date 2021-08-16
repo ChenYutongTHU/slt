@@ -5,6 +5,7 @@ Data module
 import os
 import sys
 import random
+from typing import Tuple
 
 import torch
 from torchtext import data
@@ -198,13 +199,14 @@ def token_batch_size_fn(new, count, sofar):
     return max(sgn_elements, gls_elements, txt_elements)
 
 
-def make_data_iter(
+def make_data_iter_old(
     dataset: Dataset,
     batch_size: int,
     batch_type: str = "sentence",
     train: bool = False,
     shuffle: bool = False,
 ) -> Iterator:
+    print('here!')
     """
     Returns a torchtext iterator for a torchtext dataset.
 
@@ -243,5 +245,50 @@ def make_data_iter(
             train=False,
             sort=False,
         )
-
+#    train_loader = torch.utils.data.DataLoader(
+    #     train_set,
+    #     batch_size = args.batch_size,
+    #     shuffle = (train_sampler is None),
+    #     num_workers = args.workers,
+    #     sampler = train_sampler,
+    # )
     return data_iter
+
+
+def make_data_iter(
+    dataset,
+    collate_fn,#: Callable[..., ...],
+    batch_size,#: int,
+    batch_type,#: str = "sentence",
+    distributed,#: bool = False,
+    shuffle=False,#: bool = False,
+    num_workers=1,#: int = 2
+) -> Tuple[torch.utils.data.DataLoader, torch.utils.data.Sampler]:
+    """
+    Returns a torch.utils.data.DataLoader iterator for a torchtext dataset.
+
+    :param dataset: torchtext dataset containing sgn and optionally txt
+    :param collate_fn: convert a list of samples from torchtext.data.example.Example to form a minibatch
+    :param batch_size: size of the batches the iterator prepares
+    :param batch_type: measure batch size by sentence count or by token count, 'sentence'
+    :param distributed: whether to use distributed sampler
+    :param shuffle: whether to shuffle the data before each epoch
+        (no effect if set to True for testing)
+    :return: torch.utils.data.DataLoader, torch.utils.data.Sampler
+    """
+
+    assert batch_type=='sentence'
+    if distributed:
+        sampler = torch.utils.data.distributed.DistributedSampler(dataset)
+    else:
+        if shuffle:
+            sampler = torch.utils.data.RandomSampler(dataset)
+        else:
+            sampler = torch.utils.data.SequentialSampler(dataset)
+    dataloader = torch.utils.data.DataLoader(dataset,
+                                             collate_fn=collate_fn,
+                                             batch_size=batch_size,
+                                             num_workers=num_workers,
+                                             sampler=sampler,
+                                             )
+    return dataloader, sampler
