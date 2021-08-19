@@ -46,6 +46,8 @@ class MaskedNorm(nn.Module):
         self.norm_type = norm_type
         if self.norm_type == "batch":
             self.norm = nn.BatchNorm1d(num_features=num_features)
+        elif self.norm_type == 'sync_batch':
+            self.norm = nn.SyncBatchNorm(num_features=num_features)
         elif self.norm_type == "group":
             self.norm = nn.GroupNorm(num_groups=num_groups, num_channels=num_features)
         elif self.norm_type == "layer":
