@@ -410,7 +410,7 @@ def build_model(
         txt_embed: Union[Embeddings, None] = Embeddings(
             **cfg["decoder"]["embeddings"],
             num_heads=cfg["decoder"]["num_heads"],
-            vocab_size=len(txt_vocab),
+            vocab_size=len(txt_vocab),# 
             padding_idx=txt_padding_idx,
         )
         dec_dropout = cfg["decoder"].get("dropout", 0.0)

@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import warnings
+from google.protobuf.reflection import ParseMessage
 warnings.filterwarnings("ignore")
 
 from torch.nn.parallel import DistributedDataParallel as DDP, distributed
@@ -56,6 +57,7 @@ class TrainManager:
         :param config: dictionary containing the training configurations
         """
         train_config = config["training"]
+        self.train_config = config['training']
         self.distributed = distributed
         # files for logging and storing
         if is_main_process():
@@ -106,6 +108,8 @@ class TrainManager:
         # optimization
         self.last_best_lr = train_config.get("learning_rate", -1)
         self.learning_rate_min = train_config.get("learning_rate_min", 1.0e-8)
+        self.lr_decay_cnt = 0
+        self.lr_decay_max_cnt = train_config.get("lr_decay_max_cnt", 3)
         self.clip_grad_fun = build_gradient_clipper(config=train_config)
         self.optimizer = build_optimizer(
             config=train_config, parameters=model.parameters()
@@ -188,6 +192,9 @@ class TrainManager:
 
         # initialize training statistics
         self.steps = 0
+        self.noimprove_delta = (self.train_config.get(
+            "patience", 10)+1)*self.validation_freq
+        self.last_update_steps = -self.noimprove_delta+1 #prevent stop training at th very beginning
         # stop training if this flag is True by reaching learning rate minimum
         self.stop = False
         self.total_txt_tokens = 0
@@ -299,7 +306,7 @@ class TrainManager:
         # create/modify symbolic link for best checkpoint  
         # since symlink_update is not supported in azure storage, we use copy instead
         symlink_update(
-            "{}.ckpt".format(self.steps), "{}/best.ckpt".format(self.model_dir)
+            "{}/{}.ckpt".format(self.model_dir,self.steps), "{}/best.ckpt".format(self.model_dir)
         )
 
     def init_from_checkpoint(
@@ -595,15 +602,17 @@ class TrainManager:
                         else:
                             ckpt_score = val_res["valid_scores"][self.eval_metric]
 
-                        #broadcast to other processes
-                        self.logger.info(
-                            'broadcast from 0 to others: ckpt_score={}'.format(float(ckpt_score)))
-                        torch.distributed.broadcast(torch.tensor(ckpt_score).cuda(), src=0)                      
+                        if distributed:
+                            #broadcast to other processes
+                            self.logger.info(
+                                'broadcast from 0 to others: ckpt_score={}'.format(float(ckpt_score)))
+                            torch.distributed.broadcast(torch.tensor(ckpt_score).cuda(), src=0)                      
 
                     else:
-                        ckpt_score = torch.empty(1,).cuda()
-                        torch.distributed.broadcast(ckpt_score, src=0)
-                        self.logger.info('broadcast from 0 to {}: ckpt_score {}'.format(os.environ['LOCAL_RANK'],float(ckpt_score)))
+                        if distributed:
+                            ckpt_score = torch.empty(1,).cuda()
+                            torch.distributed.broadcast(ckpt_score, src=0)
+                            self.logger.info('broadcast from 0 to {}: ckpt_score {}'.format(os.environ['LOCAL_RANK'],float(ckpt_score)))
                     
                     if distributed:
                         torch.distributed.barrier()
@@ -633,17 +642,31 @@ class TrainManager:
                         self.scheduler.step(ckpt_score)
                         now_lr = self.scheduler.optimizer.param_groups[0]["lr"]
                         
-                        if is_main_process():
+                        if distributed and is_main_process():
                             torch.distributed.broadcast(torch.tensor(now_lr).cuda(), src=0)
                             self.logger.info('broadcast from 0 to others: now_lr={}'.format(float(now_lr)))
-                        else:
+                        elif distributed:
                             now_lr0 = torch.empty(1,).cuda()
                             torch.distributed.broadcast(now_lr0, src=0) 
                             self.logger.info('broadcast from 0 to {}: now_lr0={}'.format(os.environ['LOCAL_RANK'], float(now_lr0)))
                             #assert now_lr0==now_lr  
                         if distributed:
-                            torch.distributed.barrier()
+                            torch.distributed.barrier() 
 
+                        if prev_lr != now_lr:
+                            if self.steps-self.last_update_steps <= self.noimprove_delta:
+                                self.lr_decay_cnt += 1
+                            else: # there is some improve during last patient phase.
+                                self.lr_decay_cnt = 0
+                            self.last_update_steps = self.steps
+                        else:
+                            if self.steps-self.last_update_steps <= self.noimprove_delta:
+                                pass #be patient
+                            else:
+                                self.lr_decay_cnt = 0 # improve 
+
+                        if self.lr_decay_cnt>=self.lr_decay_max_cnt:
+                            self.stop = True
                         # if prev_lr != now_lr:
                         #     if self.last_best_lr != prev_lr:
                         #         self.stop = True
@@ -659,10 +682,10 @@ class TrainManager:
 
                     self.tb_writer.add_scalar("train/learning_rate", current_lr,  self.steps)
                     
-                    if is_main_process():
+                    if distributed and is_main_process():
                         self.logger.info('broadcast from 0 to others: new_best={}'.format(new_best))
                         torch.distributed.broadcast(torch.tensor(int(new_best)).cuda(), src=0)
-                    else:
+                    elif distributed:
                         new_best0 = torch.empty(1,).cuda()
                         torch.distributed.broadcast(new_best0, src=0)
                         self.logger.info('broadcast from 0 to {}: new_best0={}'.format(os.environ['LOCAL_RANK'], bool(int(new_best0)))) 
@@ -672,10 +695,10 @@ class TrainManager:
                         torch.distributed.barrier()
                     
 
-                    if is_main_process():
+                    if distributed and is_main_process():
                         self.logger.info('broadcast from 0 to others: stop={}'.format(self.stop))
                         torch.distributed.broadcast(torch.tensor(int(self.stop)).cuda(), src=0)
-                    else:
+                    elif distributed:
                         stop0 = torch.empty(1,).cuda()
                         torch.distributed.broadcast(stop0, src=0)  
                         self.logger.info('broadcast from 0 to {}: stop0={} '.format(os.environ['LOCAL_RANK'], int(stop0)))    
@@ -1087,7 +1110,7 @@ def train(cfg_file: str) -> None:
     # set the random seed
     set_seed(seed=cfg["training"].get("random_seed", 42))
 
-    distributed = 'WORLD_SIZE' in os.environ and int(os.environ['WORLD_SIZE'])>1 
+    distributed = 'WORLD_SIZE' in os.environ
     if distributed:
         local_rank = int(os.environ['LOCAL_RANK'])
         torch.cuda.set_device(local_rank)
@@ -1190,3 +1213,4 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     train(cfg_file=args.config)
+

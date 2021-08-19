@@ -3,6 +3,7 @@
 Data module
 """
 import os
+from pickle import DICT
 import sys
 import random
 from typing import Tuple
@@ -22,7 +23,7 @@ from signjoey.vocabulary import (
 )
 
 
-def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabulary):
+def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabulary, dict, dict):
     """
     Load train, dev and optionally test data as specified in configuration.
     Vocabularies are created from the training set with a limit of `voc_limit`
