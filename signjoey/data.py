@@ -50,13 +50,12 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
     """
 
     data_path = data_cfg.get("data_path", "./data")
-
+    input_data = data_cfg.get("input_data","feature")
     if isinstance(data_cfg["train"], list):
         train_paths = [os.path.join(data_path, x) for x in data_cfg["train"]]
         dev_paths = [os.path.join(data_path, x) for x in data_cfg["dev"]]
         test_paths = [os.path.join(data_path, x) for x in data_cfg["test"]]
         pad_feature_size = sum(data_cfg["feature_size"])
-
     else:
         train_paths = os.path.join(data_path, data_cfg["train"])
         dev_paths = os.path.join(data_path, data_cfg["dev"])
@@ -116,11 +115,13 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
     )
 
     train_data = SignTranslationDataset(
+        input_data=input_data,
         path=train_paths,
         fields=(sequence_field, signer_field, sgn_field, gls_field, txt_field),
         filter_pred=lambda x: len(vars(x)["sgn"]) <= max_sent_length
         and len(vars(x)["txt"]) <= max_sent_length,
     )
+        
 
     gls_max_size = data_cfg.get("gls_voc_limit", sys.maxsize)
     gls_min_freq = data_cfg.get("gls_voc_min_freq", 1)
@@ -154,6 +155,7 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
         train_data = keep
 
     dev_data = SignTranslationDataset(
+        input_data=input_data,
         path=dev_paths,
         fields=(sequence_field, signer_field, sgn_field, gls_field, txt_field),
     )
@@ -168,6 +170,7 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
 
     # check if target exists
     test_data = SignTranslationDataset(
+        input_data=input_data,
         path=test_paths,
         fields=(sequence_field, signer_field, sgn_field, gls_field, txt_field),
     )

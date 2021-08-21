@@ -25,6 +25,7 @@ class SignTranslationDataset(data.Dataset):
 
     def __init__(
         self,
+        input_data: str,
         path: str,
         fields: Tuple[RawField, RawField, Field, Field, Field],
         **kwargs
@@ -32,6 +33,7 @@ class SignTranslationDataset(data.Dataset):
         """Create a SignTranslationDataset given paths and fields.
 
         Arguments:
+            input_data: feature/image,
             path: Common prefix of paths to the data files for both languages.
             exts: A tuple containing the extension to path for each language.
             fields: A tuple containing the fields that will be used for data
@@ -40,13 +42,23 @@ class SignTranslationDataset(data.Dataset):
                 data.Dataset.
         """
         if not isinstance(fields[0], (tuple, list)):
-            fields = [
-                ("sequence", fields[0]),
-                ("signer", fields[1]),
-                ("sgn", fields[2]),
-                ("gls", fields[3]),
-                ("txt", fields[4]),
-            ]
+            if input_data=='feature':
+                fields = [
+                    ("sequence", fields[0]),
+                    ("signer", fields[1]),
+                    ("sgn", fields[2]),
+                    ("gls", fields[3]),
+                    ("txt", fields[4]),
+                ]
+            else:
+                fields = [
+                    ("sequence", fields[0]),
+                    ("signer", fields[1]),
+                    ("gls", fields[3]),
+                    ("txt", fields[4]),
+                ]
+        elif input_data=='images':
+            fields = fields[:2]+fields[3:]
 
         if not isinstance(path, list):
             path = [path]
@@ -76,17 +88,30 @@ class SignTranslationDataset(data.Dataset):
         examples = []
         for s in samples:
             sample = samples[s]
-            examples.append(
-                data.Example.fromlist(
-                    [
-                        sample["name"],
-                        sample["signer"],
-                        # This is for numerical stability
-                        sample["sign"] + 1e-8,
-                        sample["gloss"].strip(),
-                        sample["text"].strip(),
-                    ],
-                    fields,
+            if input_data=='feature':
+                examples.append(
+                    data.Example.fromlist(
+                        [
+                            sample["name"],
+                            sample["signer"],
+                            # This is for numerical stability
+                            sample["sign"] + 1e-8,
+                            sample["gloss"].strip(),
+                            sample["text"].strip(),
+                        ],
+                        fields,
+                    )
                 )
-            )
+            else:
+                examples.append(
+                    data.Example.fromlist(
+                        [
+                            sample["name"],
+                            sample["signer"],
+                            sample["gloss"].strip(),
+                            sample["text"].strip(),
+                        ],
+                        fields,
+                    )
+                )
         super().__init__(examples, fields, **kwargs)

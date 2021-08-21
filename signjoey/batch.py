@@ -1,10 +1,32 @@
-# coding: utf-8
+# coding: utf-8'
+import os
 import math
 import random
 import torch
 import numpy as np
 import torchtext
+from PIL import Image
+import torchvision
 
+transform_dict={
+    'byol': torchvision.transforms.Compose([
+        torchvision.transforms.Resize(256),
+        torchvision.transforms.CenterCrop(224),
+        # Converts a PIL Image or numpy.ndarray (H x W x C) in the range [0, 255] to a torch.FloatTensor of shape (C x H x W) in the range [0.0, 1.0]
+        torchvision.transforms.ToTensor(),
+        torchvision.transforms.Lambda(lambda x: x*255),
+        torchvision.transforms.Normalize(mean=[123.675, 116.28, 103.53],
+                                         std=[58.395, 57.12, 57.375])
+    ]),
+    'sup': torchvision.transforms.Compose([
+        torchvision.transforms.Resize(256),
+        torchvision.transforms.CenterCrop(224),
+        # Converts a PIL Image or numpy.ndarray (H x W x C) in the range [0, 255] to a torch.FloatTensor of shape (C x H x W) in the range [0.0, 1.0]
+        torchvision.transforms.ToTensor(),
+        torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                         std=[0.229, 0.224, 0.225])
+    ])
+}
 
 
         
@@ -169,6 +191,10 @@ class Batch_from_examples(Batch):
         txt_pad_index,
         sgn_dim,
         dataset, 
+        input_data: str = 'feature',
+        img_path: str = None,
+        img_transform: str=None,
+        split: str=None,
         is_train: bool = False,
         use_cuda: bool = False,
         frame_subsampling_ratio: int = None,
@@ -180,44 +206,75 @@ class Batch_from_examples(Batch):
         self.sequence = torch_batch.sequence
         self.signer = torch_batch.signer
         # Sign
-        self.sgn, self.sgn_lengths = torch_batch.sgn
+        if input_data=='feature':
+            self.sgn, self.sgn_lengths = torch_batch.sgn
+            # Here be dragons
+            if frame_subsampling_ratio:
+                tmp_sgn = torch.zeros_like(self.sgn)
+                tmp_sgn_lengths = torch.zeros_like(self.sgn_lengths)
+                for idx, (features, length) in enumerate(zip(self.sgn, self.sgn_lengths)):
+                    features = features.clone()
+                    if random_frame_subsampling and is_train:
+                        init_frame = random.randint(
+                            0, (frame_subsampling_ratio - 1))
+                    else:
+                        init_frame = math.floor((frame_subsampling_ratio - 1) / 2)
 
-        # Here be dragons
-        if frame_subsampling_ratio:
-            tmp_sgn = torch.zeros_like(self.sgn)
-            tmp_sgn_lengths = torch.zeros_like(self.sgn_lengths)
-            for idx, (features, length) in enumerate(zip(self.sgn, self.sgn_lengths)):
-                features = features.clone()
-                if random_frame_subsampling and is_train:
-                    init_frame = random.randint(
-                        0, (frame_subsampling_ratio - 1))
-                else:
-                    init_frame = math.floor((frame_subsampling_ratio - 1) / 2)
+                    tmp_data = features[: length.long(), :]
+                    tmp_data = tmp_data[init_frame::frame_subsampling_ratio]
+                    tmp_sgn[idx, 0: tmp_data.shape[0]] = tmp_data
+                    tmp_sgn_lengths[idx] = tmp_data.shape[0]
 
-                tmp_data = features[: length.long(), :]
-                tmp_data = tmp_data[init_frame::frame_subsampling_ratio]
-                tmp_sgn[idx, 0: tmp_data.shape[0]] = tmp_data
-                tmp_sgn_lengths[idx] = tmp_data.shape[0]
+                self.sgn = tmp_sgn[:, : tmp_sgn_lengths.max().long(), :]
+                self.sgn_lengths = tmp_sgn_lengths
 
-            self.sgn = tmp_sgn[:, : tmp_sgn_lengths.max().long(), :]
-            self.sgn_lengths = tmp_sgn_lengths
+            if random_frame_masking_ratio and is_train:
+                tmp_sgn = torch.zeros_like(self.sgn)
+                num_mask_frames = (
+                    (self.sgn_lengths * random_frame_masking_ratio).floor().long()
+                )
+                for idx, features in enumerate(self.sgn):
+                    features = features.clone()
+                    mask_frame_idx = np.random.permutation(
+                        int(self.sgn_lengths[idx].long().numpy())
+                    )[: num_mask_frames[idx]]
+                    features[mask_frame_idx, :] = 1e-8
+                    tmp_sgn[idx] = features
+                self.sgn = tmp_sgn
 
-        if random_frame_masking_ratio and is_train:
-            tmp_sgn = torch.zeros_like(self.sgn)
-            num_mask_frames = (
-                (self.sgn_lengths * random_frame_masking_ratio).floor().long()
-            )
-            for idx, features in enumerate(self.sgn):
-                features = features.clone()
-                mask_frame_idx = np.random.permutation(
-                    int(self.sgn_lengths[idx].long().numpy())
-                )[: num_mask_frames[idx]]
-                features[mask_frame_idx, :] = 1e-8
-                tmp_sgn[idx] = features
-            self.sgn = tmp_sgn
+            self.sgn_dim = sgn_dim
+            self.sgn_mask = (self.sgn != torch.zeros(sgn_dim))[..., 0].unsqueeze(1)
 
-        self.sgn_dim = sgn_dim
-        self.sgn_mask = (self.sgn != torch.zeros(sgn_dim))[..., 0].unsqueeze(1)
+        else: #feature
+            assert split!=None, (split)
+            assert img_transform in ['byol','sup'], 'unsupported img_transform={}'.format(img_transform)
+            self.transform = transform_dict[img_transform]
+
+            if split=='train':
+                assert is_train
+            else:
+                assert is_train=False
+
+            self.sgn = None
+            self.sgn_lengths = []
+            self.sgn_img = []
+            assert os.path.isdir(img_path), (img_path)
+            for idx, name in enumerate(self.sequence):
+                seq_folder = os.path.join(img_path, name)
+                assert os.path.isdir(seq_folder), seq_folder
+                image_path_list = sorted(os.listdir(seq_folder))
+                self.sgn_lengths.append(len(image_path_list)) #l0,l1,l2,l3,l4
+                for p in image_path_list:
+                    pil_img = Image.open(P).convert('RGB')
+                    pil_img_transformed = self.transform(pil_img)  # C,H,W
+                    self.sgn_img.append(pil_img_transformed)
+
+            self.max_length = max(self.sgn_lengths) #create sgn_mask according to max_length & sgn_lengths
+            self.sgn_lengths = torch.tensor(self.sgn_lengths, dtype=torch.long) #B,
+
+
+
+
 
         # Text
         self.txt = None

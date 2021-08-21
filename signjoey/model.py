@@ -1,9 +1,11 @@
 # coding: utf-8
+import os
 import tensorflow as tf
 
 tf.config.set_visible_devices([], "GPU")
 
 import numpy as np
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -24,6 +26,35 @@ from signjoey.batch import Batch
 from signjoey.helpers import freeze_params
 from torch import Tensor
 from typing import Union
+import torchvision
+
+
+class CNN(torch.nn.Module):
+    def __init__(self, pretrained_ckpt):
+        super().__init__()
+        self.resnet = torchvision.models.resnet50(pretrained=False)
+        if os.path.isfile(pretrained_ckpt):
+            print('CNN trained from {}'.format(pretrained_ckpt))
+            self.resnet.load_state_dict(torch.load(pretrained_ckpt), strict=False)
+        else:
+            print('CNN from scratch, pretrained_ckpt {} is not a file'.format(pretrained_ckpt))
+
+    def forward(self, x):
+        x = self.resnet.conv1(x)
+        x = self.resnet.bn1(x)
+        x = self.resnet.relu(x)
+        x = self.resnet.maxpool(x)
+
+        x = self.resnet.layer1(x)
+        x = self.resnet.layer2(x)
+        x = self.resnet.layer3(x)
+        x = self.resnet.layer4(x)
+
+        x = self.resnet.avgpool(x)  # return logits
+        #x = torch.flatten(x, 1)
+        #x = self.fc(x)
+
+        return x.squeeze(dim=-1).squeeze(dim=-1)
 
 
 class SignModel(nn.Module):
@@ -349,6 +380,94 @@ class SignModel(nn.Module):
         )
 
 
+class CNN_SignModel(nn.Module):
+    def __init__(self, cnn, signmodel):
+        super().__init__()
+        self.cnn = cnn
+        self.signmodel = signmodel # already initialized
+
+    def extract_cnn_feature(
+        self,
+        sgn_img: Tensor,  # B,C,H,W
+        sgn_mask: Tensor,
+        sgn_lengths: Tensor,
+    ) -> (Tensor):
+        sgn_feature = self.cnn(sgn_img)
+        #split and pad#
+        assert torch.sum(
+            sgn_lengths) == sgn_feature.shape[0], (sgn_feature.shape, torch.sum(sgn_lengths))
+        sgn_seqs = torch.split(sgn_feature, sgn_lengths.tolist(), dim=0)
+        sgn = []
+        pad_length = sgn_mask.shape[1]  # L
+        for seq in sgn_seqs:
+            #seq L,D
+            if seq.shape[0] >= pad_length:
+                padded_seq = seq[:pad_length, :]  # pl,d
+            else:
+                padding_len = pad_length-seq.shape[0]
+                paddings = torch.zeros(size=[padding_len, seq.shape[1]],
+                                       dtype=seq.dtype, device=seq.device)  # L,d
+                padded_seq = torch.cat([seq, paddings], dim=0)  # pl,d
+            sgn.append(padded_seq)
+        sgn = torch.stack(sgn, dim=0)
+        assert sgn.shape[0:2] == sgn_mask.shape[0:2], (
+            sgn.shape, sgn_mask.shape)
+        return sgn
+
+    def forward(
+        self,
+        sgn_img: Tensor, #B,C,H,W
+        sgn_mask: Tensor,
+        sgn_lengths: Tensor,
+        **kwargs,
+    ) -> (Tensor, Tensor, Tensor, Tensor):
+
+        sgn = self.extract_cnn_feature(
+            sgn_img=sgn_img,
+            sgn_mask=sgn_mask,
+            sgn_lengths=sgn_lengths)
+
+        outputs = self.signmodel(
+            sgn=sgn,
+            sgn_mask=sgn_mask,
+            sgn_lengths=sgn_lengths,
+            **kwargs,
+        )
+        return outputs
+        
+    def get_loss_for_batch(
+        self,
+        batch: Batch,
+        **kwargs,
+    ) -> (Tensor, Tensor):
+        assert batch.sgn == None
+        batch.sgn = self.extract_cnn_feature(
+            sgn_img=batch.sgn_img,
+            sgn_mask=batch.sgn_mask,
+            sgn_lengths=batch.sgn_lengths)
+        outputs = self.signmodel.get_loss_for_batch(
+            batch=batch,
+            **kwargs
+        )
+        return outputs
+
+    def run_batch(
+        self,
+        batch: Batch,
+        **kwargs,
+    ) -> (np.array, np.array, np.array):
+        assert batch.sgn == None
+        batch.sgn = self.extract_cnn_feature(
+            sgn_img=batch.sgn_img,
+            sgn_mask=batch.sgn_mask,
+            sgn_lengths=batch.sgn_lengths)
+        outputs = self.signmodel.run_batch(
+            batch=batch,
+            **kwargs
+        )
+        return outputs
+    
+
 def build_model(
     cfg: dict,
     sgn_dim: int,
@@ -356,6 +475,7 @@ def build_model(
     txt_vocab: TextVocabulary,
     do_recognition: bool = True,
     do_translation: bool = True,
+    input_data: str = 'feature'
 ) -> SignModel:
     """
     Build and initialize the model according to the configuration.
@@ -367,6 +487,7 @@ def build_model(
     :return: built and initialized model
     :param do_recognition: flag to build the model with recognition output.
     :param do_translation: flag to build the model with translation decoder.
+    :param input_data: feature or image
     """
 
     txt_padding_idx = txt_vocab.stoi[PAD_TOKEN]
@@ -435,7 +556,7 @@ def build_model(
         txt_embed = None
         decoder = None
 
-    model: SignModel = SignModel(
+    sign_model: SignModel = SignModel(
         encoder=encoder,
         gloss_output_layer=gloss_output_layer,
         decoder=decoder,
@@ -447,14 +568,15 @@ def build_model(
         do_translation=do_translation,
     )
 
+
     if do_translation:
         # tie softmax layer with txt embeddings
         if cfg.get("tied_softmax", False):
             # noinspection PyUnresolvedReferences
-            if txt_embed.lut.weight.shape == model.decoder.output_layer.weight.shape:
+            if txt_embed.lut.weight.shape == sign_model.decoder.output_layer.weight.shape:
                 # (also) share txt embeddings and softmax layer:
                 # noinspection PyUnresolvedReferences
-                model.decoder.output_layer.weight = txt_embed.lut.weight
+                sign_model.decoder.output_layer.weight = txt_embed.lut.weight
             else:
                 raise ValueError(
                     "For tied_softmax, the decoder embedding_dim and decoder "
@@ -462,7 +584,13 @@ def build_model(
                     "The decoder must be a Transformer."
                 )
 
-    # custom initialization of model parameters
-    initialize_model(model, cfg, txt_padding_idx)
+    # custom initialization of sign_model parameters
+    initialize_model(sign_model, cfg, txt_padding_idx)
 
-    return model
+    if input_data=='feature':
+        return sign_model
+    else:
+        cnn = CNN(pretrained_ckpt=cfg["cnn"].get('pretrained_ckpt', None))
+        cnn_signmodel = CNN_SignModel(cnn=cnn, signmodel=sign_model) #already initialized
+
+

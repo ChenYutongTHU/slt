@@ -3,6 +3,7 @@ import torch
 
 from torch import nn, Tensor
 import torch.nn.functional as F
+import torchvision
 from signjoey.helpers import freeze_params
 
 
@@ -244,3 +245,5 @@ class SpatialEmbeddings(nn.Module):
             self.embedding_dim,
             self.input_size,
         )
+
+

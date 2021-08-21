@@ -58,6 +58,8 @@ class TrainManager:
         """
         train_config = config["training"]
         self.train_config = config['training']
+        self.input_data = config["data"].get("input_data", "feature")
+        self.cfg  = config
         self.distributed = distributed
         # files for logging and storing
         if is_main_process():
@@ -381,6 +383,9 @@ class TrainManager:
                     txt_pad_index=self.txt_pad_index,
                     sgn_dim=self.feature_size,
                     dataset=train_data,
+                    input_data=self.input_data,
+                    img_path=self.cfg['data'].get('img_path',None),
+                    split='train',
                     use_cuda=self.use_cuda,
                     frame_subsampling_ratio=self.frame_subsampling_ratio,
                     random_frame_subsampling=self.random_frame_subsampling,
@@ -1106,7 +1111,7 @@ def train(cfg_file: str) -> None:
     :param cfg_file: path to configuration yaml file
     """
     cfg = load_config(cfg_file)
-
+    input_data = cfg.get('input_data','feature')
     # set the random seed
     set_seed(seed=cfg["training"].get("random_seed", 42))
 
@@ -1128,16 +1133,33 @@ def train(cfg_file: str) -> None:
     # build model and load parameters into it
     do_recognition = cfg["training"].get("recognition_loss_weight", 1.0) > 0.0
     do_translation = cfg["training"].get("translation_loss_weight", 1.0) > 0.0
-    model = build_model(
-        cfg=cfg["model"],
-        gls_vocab=gls_vocab,
-        txt_vocab=txt_vocab,
-        sgn_dim=sum(cfg["data"]["feature_size"])
-        if isinstance(cfg["data"]["feature_size"], list)
-        else cfg["data"]["feature_size"],
-        do_recognition=do_recognition,
-        do_translation=do_translation,
-    )
+
+    if input_data=='feature':
+        model = build_model(
+            cfg=cfg["model"],
+            gls_vocab=gls_vocab,
+            txt_vocab=txt_vocab,
+            sgn_dim=sum(cfg["data"]["feature_size"])
+            if isinstance(cfg["data"]["feature_size"], list)
+            else cfg["data"]["feature_size"],
+            do_recognition=do_recognition,
+            do_translation=do_translation,
+        )
+    elif input_data=='image':
+        assert cfg["data"]["feature_size"] == 2048, 'feature_size={}? When input_data is img, only support resnet50 logits.'.format(
+            cfg["data"]["feature_size"])
+        model = build_model(
+            cfg=cfg["model"],
+            gls_vocab=gls_vocab,
+            txt_vocab=txt_vocab,
+            sgn_dim=sum(cfg["data"]["feature_size"])
+            if isinstance(cfg["data"]["feature_size"], list)
+            else cfg["data"]["feature_size"],
+            do_recognition=do_recognition,
+            do_translation=do_translation,
+            input_data = input_data
+        )
+
 
     # for training management, e.g. early stopping and model selection
     trainer = TrainManager(model=model, config=cfg, distributed=distributed)
