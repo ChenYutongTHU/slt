@@ -26,6 +26,70 @@ from torch import Tensor
 from typing import Union
 
 
+def get_loss_for_batch(
+    model,
+    batch: Batch,
+    recognition_loss_weight: float,
+    translation_loss_weight: float,
+    recognition_loss_function: nn.Module,
+    translation_loss_function: nn.Module,
+    ) -> (Tensor, Tensor):
+    
+    """
+    Compute non-normalized loss and number of tokens for a batch
+
+    :param batch: batch to compute loss for
+    :param recognition_loss_function: Sign Language Recognition Loss Function (CTC)
+    :param translation_loss_function: Sign Language Translation Loss Function (XEntropy)
+    :param recognition_loss_weight: Weight for recognition loss
+    :param translation_loss_weight: Weight for translation loss
+    :return: recognition_loss: sum of losses over sequences in the batch
+    :return: translation_loss: sum of losses over non-pad elements in the batch
+    """
+    # pylint: disable=unused-variable
+
+    # Do a forward pass
+    decoder_outputs, gloss_probabilities = model(
+        sgn=batch.sgn,
+        sgn_mask=batch.sgn_mask,
+        sgn_lengths=batch.sgn_lengths,
+        txt_input=batch.txt_input,
+        txt_mask=batch.txt_mask,
+        )
+
+    do_recognition = recognition_loss_function!=None
+    do_translation = translation_loss_function!=None
+
+    if do_recognition:
+            assert gloss_probabilities is not None
+            # Calculate Recognition Loss
+            recognition_loss = (
+                recognition_loss_function(
+                    gloss_probabilities,
+                    batch.gls,
+                    batch.sgn_lengths.long(),
+                    batch.gls_lengths.long(),
+                )
+                * recognition_loss_weight
+            )
+    else:
+        recognition_loss = None
+
+    if do_translation:
+        assert decoder_outputs is not None
+        word_outputs, _, _, _ = decoder_outputs
+        # Calculate Translation Loss
+        txt_log_probs = F.log_softmax(word_outputs, dim=-1)
+        translation_loss = (
+            translation_loss_function(txt_log_probs, batch.txt)
+            * translation_loss_weight
+        )
+    else:
+        translation_loss = None
+
+    return recognition_loss, translation_loss
+
+
 class SignModel(nn.Module):
     """
     Base Model class

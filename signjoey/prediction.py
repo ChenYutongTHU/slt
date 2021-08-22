@@ -19,7 +19,7 @@ from signjoey.helpers import (
     load_checkpoint,
 )
 from signjoey.metrics import bleu, chrf, rouge, wer_list
-from signjoey.model import build_model, SignModel
+from signjoey.model import build_model, SignModel, get_loss_for_batch
 from signjoey.batch import Batch, Batch_from_examples
 from signjoey.data import load_data, make_data_iter
 from signjoey.vocabulary import PAD_TOKEN, SIL_TOKEN
@@ -135,7 +135,8 @@ def validate_on_data(
             batch._make_cuda()
             sort_reverse_index = batch.sort_by_sgn_lengths()
 
-            batch_recognition_loss, batch_translation_loss = model.get_loss_for_batch(
+            batch_recognition_loss, batch_translation_loss = get_loss_for_batch(
+                model=model,
                 batch=batch,
                 recognition_loss_function=recognition_loss_function
                 if do_recognition
@@ -326,7 +327,7 @@ def test(
     _, dev_data, test_data, gls_vocab, txt_vocab, _, _ = load_data(data_cfg=cfg["data"])
 
     # load model state from disk
-    model_checkpoint = load_checkpoint(ckpt, use_cuda=use_cuda)
+    model_checkpoint = load_checkpoint(ckpt)#, map_location='cuda:0') #-default to gpu
 
     # build model and load parameters into it
     do_recognition = cfg["training"].get("recognition_loss_weight", 1.0) > 0.0

@@ -200,7 +200,7 @@ def get_latest_checkpoint(ckpt_dir: str) -> Optional[str]:
     return latest_checkpoint
 
 
-def load_checkpoint(path: str, use_cuda: bool = True) -> dict:
+def load_checkpoint(path: str, map_location: str='cpu') -> dict:
     """
     Load model from saved checkpoint.
 
@@ -209,7 +209,7 @@ def load_checkpoint(path: str, use_cuda: bool = True) -> dict:
     :return: checkpoint (dict)
     """
     assert os.path.isfile(path), "Checkpoint %s not found" % path
-    checkpoint = torch.load(path, map_location="cuda" if use_cuda else "cpu")
+    checkpoint = torch.load(path, map_location=map_location)
     return checkpoint
 
 

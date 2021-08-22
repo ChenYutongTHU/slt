@@ -29,7 +29,7 @@ from signjoey.helpers import (
     symlink_update,
     is_main_process
 )
-from signjoey.model import SignModel
+from signjoey.model import SignModel, get_loss_for_batch
 from signjoey.prediction import validate_on_data
 from signjoey.loss import XentLoss
 from signjoey.data import load_data, make_data_iter
@@ -183,12 +183,26 @@ class TrainManager:
         self.eval_batch_type = train_config.get("eval_batch_type", self.batch_type)
 
         self.use_cuda = train_config["use_cuda"]
+
         if self.use_cuda:
             self.model.cuda()
-            if self.do_translation:
-                self.translation_loss_function.cuda()
-            if self.do_recognition:
-                self.recognition_loss_function.cuda()
+        # model parameters
+        if "load_model" in train_config.keys():
+            model_load_path = train_config["load_model"]
+            self.logger.info("Loading model from %s", model_load_path)
+            reset_best_ckpt = train_config.get("reset_best_ckpt", False)
+            reset_scheduler = train_config.get("reset_scheduler", False)
+            reset_optimizer = train_config.get("reset_optimizer", False)
+            self.init_from_checkpoint(
+                model_load_path,
+                reset_best_ckpt=reset_best_ckpt,
+                reset_scheduler=reset_scheduler,
+                reset_optimizer=reset_optimizer,
+            )
+        if distributed:
+            local_rank = int(os.environ['LOCAL_RANK'])
+            self.model = DDP(self.model, device_ids=[local_rank], output_device=local_rank)
+
 
         # initialize training statistics
         self.steps = 0
@@ -210,19 +224,6 @@ class TrainManager:
             else score > self.best_ckpt_score
         )
 
-        # model parameters
-        if "load_model" in train_config.keys():
-            model_load_path = train_config["load_model"]
-            self.logger.info("Loading model from %s", model_load_path)
-            reset_best_ckpt = train_config.get("reset_best_ckpt", False)
-            reset_scheduler = train_config.get("reset_scheduler", False)
-            reset_optimizer = train_config.get("reset_optimizer", False)
-            self.init_from_checkpoint(
-                model_load_path,
-                reset_best_ckpt=reset_best_ckpt,
-                reset_scheduler=reset_scheduler,
-                reset_optimizer=reset_optimizer,
-            )
 
     def _get_recognition_params(self, train_config) -> None:
         # NOTE (Cihan): The blank label is the silence index in the gloss vocabulary.
@@ -284,7 +285,7 @@ class TrainManager:
             "best_ckpt_score": self.best_ckpt_score,
             "best_all_ckpt_scores": self.best_all_ckpt_scores,
             "best_ckpt_iteration": self.best_ckpt_iteration,
-            "model_state": self.model.state_dict(),
+            "model_state": self.model.module.state_dict(),
             "optimizer_state": self.optimizer.state_dict(),
             "scheduler_state": self.scheduler.state_dict()
             if self.scheduler is not None
@@ -331,7 +332,14 @@ class TrainManager:
         :param reset_optimizer: reset the optimizer, and do not use the one
                                 stored in the checkpoint.
         """
-        model_checkpoint = load_checkpoint(path=path, use_cuda=self.use_cuda)
+        if not self.use_cuda:
+            map_location = 'cpu' 
+        else:
+            if 'LOCAL_RANK' in os.environ:
+                map_location = 'cuda:{}'.format(os.environ['LOCAL_RANK'])
+            else:
+                map_location = 'cuda'
+        model_checkpoint = load_checkpoint(path=path, map_location=map_location)
 
         # restore model and optimizer parameters
         self.model.load_state_dict(model_checkpoint["model_state"])
@@ -362,9 +370,9 @@ class TrainManager:
         else:
             self.logger.info("Reset tracking of the best checkpoint.")
 
-        # move parameters to cuda
-        if self.use_cuda:
-            self.model.cuda()
+        # # move parameters to cuda already in map_location
+        # if self.use_cuda:
+        #     self.model.cuda()
 
     def train_and_validate(self, train_data: Dataset, valid_data: Dataset, distributed=False) -> None:
         """
@@ -507,7 +515,7 @@ class TrainManager:
                         #   Maybe have a NamedTuple with optional fields?
                         #   Hmm... Future Cihan's problem.
                         val_res = validate_on_data(
-                            model=self.model,
+                            model=self.model.module,
                             data=valid_data,
                             batch_size=self.eval_batch_size,
                             use_cuda=self.use_cuda,
@@ -601,7 +609,7 @@ class TrainManager:
                             ckpt_score = val_res["valid_ppl"]
                         else:
                             ckpt_score = val_res["valid_scores"][self.eval_metric]
-
+                        
                         if distributed:
                             #broadcast to other processes
                             self.logger.info(
@@ -613,7 +621,7 @@ class TrainManager:
                             ckpt_score = torch.empty(1,).cuda()
                             torch.distributed.broadcast(ckpt_score, src=0)
                             self.logger.info('broadcast from 0 to {}: ckpt_score {}'.format(os.environ['LOCAL_RANK'],float(ckpt_score)))
-                    
+
                     if distributed:
                         torch.distributed.barrier()
 
@@ -870,8 +878,8 @@ class TrainManager:
         :return normalized_recognition_loss: Normalized recognition loss
         :return normalized_translation_loss: Normalized translation loss
         """
-
-        recognition_loss, translation_loss = self.model.get_loss_for_batch(
+        recognition_loss, translation_loss = get_loss_for_batch(
+            model=self.model,
             batch=batch,
             recognition_loss_function=self.recognition_loss_function
             if self.do_recognition
@@ -926,15 +934,15 @@ class TrainManager:
         # compute gradients
         total_loss.backward()
 
+
         if self.clip_grad_fun is not None:
             # clip gradients (in-place)
-            self.clip_grad_fun(params=self.model.parameters())
+            self.clip_grad_fun(params=self.model.module.parameters())
 
         if update:
-            # make gradient step
+
             self.optimizer.step()
             self.optimizer.zero_grad()
-
             # increment step counter
             self.steps += 1
 
@@ -1146,7 +1154,6 @@ def train(cfg_file: str) -> None:
 
     # DDP
     if distributed:
-        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
         trainer.logger.info('Distributed training, world_size={}, local_rank={}, \
                 rank={}'.format(os.environ['WORLD_SIZE'], os.environ['LOCAL_RANK'],
                                           os.environ['RANK']))
@@ -1212,5 +1219,6 @@ if __name__ == "__main__":
         help="Training configuration file (yaml).",
     )
     args = parser.parse_args()
+    assert 'LOCAL_RANK' in os.environ, 'Only support distributed training now!'
     train(cfg_file=args.config)
 
