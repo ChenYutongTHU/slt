@@ -1,6 +1,5 @@
 import math
 import torch
-
 from torch import nn, Tensor
 import torch.nn.functional as F
 from signjoey.helpers import freeze_params
@@ -45,6 +44,7 @@ class MaskedNorm(nn.Module):
         super().__init__()
         self.norm_type = norm_type
         if self.norm_type == "batch":
+            raise ValueError("Please use sync_batch")
             self.norm = nn.BatchNorm1d(num_features=num_features)
         elif self.norm_type == 'sync_batch':
             self.norm = nn.SyncBatchNorm(num_features=num_features)

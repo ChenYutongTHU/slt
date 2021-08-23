@@ -33,6 +33,8 @@ from signjoey.phoenix_utils.phoenix_cleanup import (
 def validate_on_data(
     model: SignModel,
     data: Dataset,
+    cfg: dict,
+    split: str,
     batch_size: int,
     use_cuda: bool,
     sgn_dim: int,
@@ -107,9 +109,15 @@ def validate_on_data(
         collate_fn=lambda x: Batch_from_examples(
             is_train=False,
             example_list=x,
-            dataset=data,
             txt_pad_index=txt_pad_index,
             sgn_dim=sgn_dim,
+            dataset=data,
+            input_data=cfg['data'].get('input_data','feature'),
+            img_path=cfg['data'].get('img_path', None),
+            img_transform=cfg['model']['cnn']['type']
+            if cfg['data'].get('input_data', 'feature') == 'image'
+            else None,
+            split=split,
             use_cuda=use_cuda,
             frame_subsampling_ratio=frame_subsampling_ratio,
         ),
@@ -150,6 +158,7 @@ def validate_on_data(
                 translation_loss_weight=translation_loss_weight
                 if do_translation
                 else None,
+                input_data=cfg['data'].get('input_data','feature')
             )
             if do_recognition:
                 total_recognition_loss += batch_recognition_loss
@@ -397,6 +406,8 @@ def test(
             dev_recognition_results[rbw] = validate_on_data(
                 model=model,
                 data=dev_data,
+                split='dev',
+                cfg=cfg,
                 batch_size=batch_size,
                 use_cuda=use_cuda,
                 batch_type=batch_type,
@@ -460,6 +471,8 @@ def test(
                 dev_translation_results[tbw][ta] = validate_on_data(
                     model=model,
                     data=dev_data,
+                    split='dev',
+                    cfg=cfg,
                     batch_size=batch_size,
                     use_cuda=use_cuda,
                     level=level,
@@ -563,6 +576,8 @@ def test(
     test_best_result = validate_on_data(
         model=model,
         data=test_data,
+        split='test',
+        cfg=cfg,
         batch_size=batch_size,
         use_cuda=use_cuda,
         batch_type=batch_type,

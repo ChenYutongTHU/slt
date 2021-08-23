@@ -359,7 +359,7 @@ def beam_search(
         batch_index = topk_beam_index + beam_offset[
             : topk_beam_index.size(0)
         ].unsqueeze(1)
-        select_indices = batch_index.view(-1)
+        select_indices = batch_index.view(-1).long()
 
         # append latest prediction
         alive_seq = torch.cat(
@@ -400,7 +400,7 @@ def beam_search(
                             break
                         results["scores"][b].append(score)
                         results["predictions"][b].append(pred)
-            non_finished = end_condition.eq(False).nonzero().view(-1)
+            non_finished = end_condition.eq(False).nonzero().view(-1).long()
             # if all sentences are translated, no need to go further
             # pylint: disable=len-as-condition
             if len(non_finished) == 0:
@@ -414,7 +414,7 @@ def beam_search(
             )
 
         # reorder indices, outputs and masks
-        select_indices = batch_index.view(-1)
+        select_indices = batch_index.view(-1).long()
         encoder_output = encoder_output.index_select(0, select_indices)
         src_mask = src_mask.index_select(0, select_indices)
 

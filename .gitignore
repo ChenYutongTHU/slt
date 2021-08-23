@@ -9,3 +9,4 @@ data/
 *.pyc
 unused
 demo.py
+cnn_pretrainedmodels

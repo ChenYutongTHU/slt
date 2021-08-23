@@ -57,7 +57,9 @@ class TrainManager:
         :param config: dictionary containing the training configurations
         """
         train_config = config["training"]
+        self.cfg = config
         self.train_config = config['training']
+        self.input_data = config["data"].get("input_data", "feature")
         self.distributed = distributed
         # files for logging and storing
         if is_main_process():
@@ -389,6 +391,12 @@ class TrainManager:
                     txt_pad_index=self.txt_pad_index,
                     sgn_dim=self.feature_size,
                     dataset=train_data,
+                    input_data=self.input_data,
+                    img_path=self.cfg['data'].get('img_path', None),
+                    img_transform=self.cfg['model']['cnn']['type']
+                    if self.input_data=='image'
+                    else None,
+                    split='train',
                     use_cuda=self.use_cuda,
                     frame_subsampling_ratio=self.frame_subsampling_ratio,
                     random_frame_subsampling=self.random_frame_subsampling,
@@ -434,6 +442,12 @@ class TrainManager:
                 #     random_frame_subsampling=self.random_frame_subsampling,
                 #     random_frame_masking_ratio=self.random_frame_masking_ratio,
                 # )
+                # print(batch.sgn_mask.shape)
+                # print(batch.sgn_mask)
+                # print(batch.sgn_lengths)
+                # print(torch.sum(batch.sgn_lengths))
+                # print(batch.sgn_img.shape)
+                # input()
                 batch._make_cuda()
                 # only update every batch_multiplier batches
                 # see https://medium.com/@davidlmorton/
@@ -517,6 +531,8 @@ class TrainManager:
                         val_res = validate_on_data(
                             model=self.model.module,
                             data=valid_data,
+                            split='dev',
+                            cfg=self.cfg,
                             batch_size=self.eval_batch_size,
                             use_cuda=self.use_cuda,
                             batch_type=self.eval_batch_type,
@@ -893,6 +909,7 @@ class TrainManager:
             translation_loss_weight=self.translation_loss_weight
             if self.do_translation
             else None,
+            input_data = self.input_data
         )
 
         # normalize translation loss
@@ -1114,7 +1131,7 @@ def train(cfg_file: str) -> None:
     :param cfg_file: path to configuration yaml file
     """
     cfg = load_config(cfg_file)
-
+    input_data = cfg["data"].get('input_data', 'feature')
     # set the random seed
     set_seed(seed=cfg["training"].get("random_seed", 42))
 
@@ -1136,21 +1153,51 @@ def train(cfg_file: str) -> None:
     # build model and load parameters into it
     do_recognition = cfg["training"].get("recognition_loss_weight", 1.0) > 0.0
     do_translation = cfg["training"].get("translation_loss_weight", 1.0) > 0.0
-    model = build_model(
-        cfg=cfg["model"],
-        gls_vocab=gls_vocab,
-        txt_vocab=txt_vocab,
-        sgn_dim=sum(cfg["data"]["feature_size"])
-        if isinstance(cfg["data"]["feature_size"], list)
-        else cfg["data"]["feature_size"],
-        do_recognition=do_recognition,
-        do_translation=do_translation,
-    )
+    
+    if input_data == 'feature':
+        model = build_model(
+            cfg=cfg["model"],
+            gls_vocab=gls_vocab,
+            txt_vocab=txt_vocab,
+            sgn_dim=sum(cfg["data"]["feature_size"])
+            if isinstance(cfg["data"]["feature_size"], list)
+            else cfg["data"]["feature_size"],
+            do_recognition=do_recognition,
+            do_translation=do_translation,
+        )
+    elif input_data == 'image':
+        assert cfg["data"]["feature_size"] == 2048, 'feature_size={}? When input_data is img, only support resnet50 logits.'.format(
+            cfg["data"]["feature_size"])
+        model = build_model(
+            cfg=cfg["model"],
+            gls_vocab=gls_vocab,
+            txt_vocab=txt_vocab,
+            sgn_dim=sum(cfg["data"]["feature_size"])
+            if isinstance(cfg["data"]["feature_size"], list)
+            else cfg["data"]["feature_size"],
+            do_recognition=do_recognition,
+            do_translation=do_translation,
+            input_data=input_data
+        )
 
+    
+    
     # for training management, e.g. early stopping and model selection
     trainer = TrainManager(model=model, config=cfg, distributed=distributed)
 
-    # store copy of original training config in model dir
+    total_params_trainable = sum(p.numel()
+                                 for p in model.parameters() if p.requires_grad)
+    total_params = sum(p.numel() for p in model.parameters())
+    trainer.logger.info('# Total parameters = {}'.format(total_params))
+    trainer.logger.info('# Total trainable parameters = {}'.format(total_params_trainable))
+
+    if input_data=='image':
+        for sub in ['cnn', 'signmodel']:
+            total_params_trainable = sum(p.numel()
+                                        for p in getattr(model, sub).parameters() if p.requires_grad)
+            total_params = sum(p.numel() for p in getattr(model, sub).parameters())
+            trainer.logger.info('# {} parameters = {}'.format(sub, total_params))
+            trainer.logger.info('# {} trainable parameters = {}'.format(sub, total_params_trainable))            
 
     # DDP
     if distributed:
