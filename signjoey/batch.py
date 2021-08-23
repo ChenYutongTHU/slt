@@ -273,7 +273,7 @@ class Batch_from_examples(Batch):
             for idx, name in enumerate(self.sequence):
                 seq_folder = os.path.join(img_path, name)
                 assert os.path.isdir(seq_folder), seq_folder
-                image_path_list = sorted(os.listdir(seq_folder))
+                image_path_list = [ss for ss in sorted(os.listdir(seq_folder)) if ss[-4:]=='.png']
                 self.sgn_lengths.append(len(image_path_list))  # l0,l1,l2,l3,l4
                 for p in image_path_list:
                     p_ = os.path.join(seq_folder, p)

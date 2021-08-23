@@ -104,8 +104,9 @@ def get_loss_for_batch(
 
 
 class CNN(torch.nn.Module):
-    def __init__(self, pretrained_ckpt):
+    def __init__(self, pretrained_ckpt, freeze_resnet_layer=0):
         super().__init__()
+        self.freeze_resnet_layer = int(freeze_resnet_layer)
         self.resnet = torchvision.models.resnet50(pretrained=False)
         self.resnet.fc = None
         if os.path.isfile(pretrained_ckpt):
@@ -115,6 +116,16 @@ class CNN(torch.nn.Module):
         else:
             print('CNN from scratch, pretrained_ckpt {} is not a file'.format(
                 pretrained_ckpt))
+        
+        #freeze resnet_layer
+        if self.freeze_resnet_layer:
+            freeze_modules = [self.resnet.conv1, self.resnet.bn1, self.resnet.relu, self.resnet.maxpool]
+            for li in range(1, self.freeze_resnet_layer+1):
+                freeze_modules.append(getattr(self.resnet, 'layer{}'.format(li)))
+            
+            for m in freeze_modules:
+                for param in m.parameters():
+                    param.requires_grad = False
 
     def forward(self, x):
         x = self.resnet.conv1(x)
@@ -675,7 +686,8 @@ def build_model(
     if input_data == 'feature':
         return sign_model
     else:
-        cnn = CNN(pretrained_ckpt=cfg["cnn"].get('pretrained_ckpt', None))
+        cnn = CNN(pretrained_ckpt=cfg["cnn"].get('pretrained_ckpt', None), 
+                    freeze_resnet_layer=cfg["cnn"].get('freeze_resnet_layer',0))
         cnn_signmodel = CNN_SignModel(
             cnn=cnn, signmodel=sign_model)  # already initialized
 
