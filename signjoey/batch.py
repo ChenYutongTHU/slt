@@ -161,6 +161,11 @@ class Batch:
 
         :return:
         """
+        if self.input_data=='image':
+            rev_index = list(range(0, len(self.sgn_lengths)))
+            return rev_index
+            #don't sort
+
         _, perm_index = self.sgn_lengths.sort(0, descending=True)
         rev_index = [0] * perm_index.size(0)
         for new_pos, old_pos in enumerate(perm_index.cpu().numpy()):
@@ -210,7 +215,7 @@ class Batch_from_examples(Batch):
         torch_batch = torchtext.data.Batch(data=example_list, dataset=dataset, device=None)
         self.sequence = torch_batch.sequence
         self.signer = torch_batch.signer
-
+        self.input_data = input_data
         if input_data == 'feature':
             self.sgn, self.sgn_lengths = torch_batch.sgn
             # Here be dragons

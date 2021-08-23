@@ -141,7 +141,7 @@ def validate_on_data(
         total_num_seqs = 0
         for batch in iter(valid_iter):
             batch._make_cuda()
-            sort_reverse_index = batch.sort_by_sgn_lengths()
+            sort_reverse_index = batch.sort_by_sgn_lengths() 
 
             batch_recognition_loss, batch_translation_loss = get_loss_for_batch(
                 model=model,

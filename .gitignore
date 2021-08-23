@@ -10,3 +10,4 @@ data/
 unused
 demo.py
 cnn_pretrainedmodels
+debug.py

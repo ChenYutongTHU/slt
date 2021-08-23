@@ -1,11 +1,13 @@
 #!/usr/bin/env python
+from typing import List, Dict
+import os
+os.environ['MKL_THREADING_LAYER'] = 'GNU'
 import warnings
 from google.protobuf.reflection import ParseMessage
 warnings.filterwarnings("ignore")
 
 from torch.nn.parallel import DistributedDataParallel as DDP, distributed
 import torch
-
 torch.backends.cudnn.deterministic = True
 
 import argparse
@@ -41,8 +43,6 @@ from torch import Tensor
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from torchtext.data import Dataset
-from typing import List, Dict
-
 
 # pylint: disable=too-many-instance-attributes
 class TrainManager:
