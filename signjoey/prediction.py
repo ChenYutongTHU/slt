@@ -1,6 +1,9 @@
 #!/usr/bin/env python
+from helpers import get_distributed_sampler_index
+import os
 import torch
-
+from torch.nn.parallel import distributed
+from torch.nn.parallel import DistributedDataParallel as DDP, distributed
 torch.backends.cudnn.deterministic = True
 
 import logging
@@ -69,7 +72,7 @@ def validate_on_data(
     If `loss_function` is not None and references are given,
     also compute the loss.
 
-    :param model: model module
+    :param model: torch.nn.parallel.DistributedDataParallel
     :param data: dataset for validation
     :param batch_size: validation batch size
     :param use_cuda: if True, use CUDA
@@ -104,6 +107,7 @@ def validate_on_data(
         - decoded_valid: raw validation hypotheses (before post-processing),
         - valid_attention_scores: attention scores for validation hypotheses
     """
+    assert type(model) == torch.nn.parallel.DistributedDataParallel
     valid_iter, valid_sampler = make_data_iter(
         dataset=data,
         collate_fn=lambda x: Batch_from_examples(
@@ -124,7 +128,7 @@ def validate_on_data(
         batch_size=batch_size,
         batch_type=batch_type,
         shuffle=False,
-        distributed=False,
+        distributed=True, #currently only support distributed!
     )
 
     # disable dropout
@@ -139,7 +143,12 @@ def validate_on_data(
         total_num_txt_tokens = 0
         total_num_gls_tokens = 0
         total_num_seqs = 0
+        split_gls = []
+        split_txt = []
         for batch in iter(valid_iter):
+            split_gls.append(batch.gls)
+            split_txt.append(batch.txt)
+
             batch._make_cuda()
             sort_reverse_index = batch.sort_by_sgn_lengths() 
 
@@ -172,7 +181,7 @@ def validate_on_data(
                 batch_gls_predictions,
                 batch_txt_predictions,
                 batch_attention_scores,
-            ) = model.run_batch(
+            ) = model.module.run_batch(
                 batch=batch,
                 recognition_beam_size=recognition_beam_size if do_recognition else None,
                 translation_beam_size=translation_beam_size if do_translation else None,
@@ -197,8 +206,14 @@ def validate_on_data(
                 else []
             )
 
+        #data -> data_split
+        split_indices = get_distributed_sampler_index(
+            total_len=len(data), batch_size=batch_size,
+            rank=int(os.environ['LOCAL_RANK']), world_size=int(os.environ['WORLD_SIZE']))
+        all_gls_outputs = all_gls_outputs[:len(split_indices)]
+        all_txt_outputs = all_txt_outputs[:len(split_indices)]
         if do_recognition:
-            assert len(all_gls_outputs) == len(data)
+            assert len(all_gls_outputs) == len(split_indices)
             if (
                 recognition_loss_function is not None
                 and recognition_loss_weight != 0
@@ -208,7 +223,7 @@ def validate_on_data(
             else:
                 valid_recognition_loss = -1
             # decode back to symbols
-            decoded_gls = model.gls_vocab.arrays_to_sentences(arrays=all_gls_outputs)
+            decoded_gls = model.module.gls_vocab.arrays_to_sentences(arrays=all_gls_outputs)
 
             # Gloss clean-up function
             if dataset_version == "phoenix_2014_trans":
@@ -219,15 +234,15 @@ def validate_on_data(
                 raise ValueError("Unknown Dataset Version: " + dataset_version)
 
             # Construct gloss sequences for metrics
-            gls_ref = [gls_cln_fn(" ".join(t)) for t in data.gls]
+            gls_ref = [gls_cln_fn(" ".join(t)) for ti, t in enumerate(data.gls) if ti in split_indices]
             gls_hyp = [gls_cln_fn(" ".join(t)) for t in decoded_gls]
             assert len(gls_ref) == len(gls_hyp)
 
             # GLS Metrics
             gls_wer_score = wer_list(hypotheses=gls_hyp, references=gls_ref)
-
+        
         if do_translation:
-            assert len(all_txt_outputs) == len(data)
+            assert len(all_txt_outputs) == len(split_indices)
             if (
                 translation_loss_function is not None
                 and translation_loss_weight != 0
@@ -241,11 +256,13 @@ def validate_on_data(
                 valid_translation_loss = -1
                 valid_ppl = -1
             # decode back to symbols
-            decoded_txt = model.txt_vocab.arrays_to_sentences(arrays=all_txt_outputs)
-            # evaluate with metric on full dataset
+            decoded_txt = model.module.txt_vocab.arrays_to_sentences(arrays=all_txt_outputs)
+            # evaluate with metric on full data_splitset
             join_char = " " if level in ["word", "bpe"] else ""
             # Construct text sequences for metrics
-            txt_ref = [join_char.join(t) for t in data.txt]
+            data_split_txt = [t for ti, t in enumerate(
+                data.txt) if ti in split_indices]
+            txt_ref = [join_char.join(t) for t in data_split_txt]
             txt_hyp = [join_char.join(t) for t in decoded_txt]
             # post-process
             if level == "bpe":
@@ -258,15 +275,17 @@ def validate_on_data(
             txt_chrf = chrf(references=txt_ref, hypotheses=txt_hyp)
             txt_rouge = rouge(references=txt_ref, hypotheses=txt_hyp)
 
-        valid_scores = {}
+        valid_scores = {"num_seq":torch.tensor(len(split_indices), device='cuda')}
         if do_recognition:
-            valid_scores["wer"] = gls_wer_score["wer"]
-            valid_scores["wer_scores"] = gls_wer_score
+            valid_scores["wer"] = torch.tensor(gls_wer_score["wer"], device='cuda')
+
+            valid_scores["wer_scores"] = {k:torch.tensor(s, device='cuda') for k,s in gls_wer_score.items()}
         if do_translation:
-            valid_scores["bleu"] = txt_bleu["bleu4"]
-            valid_scores["bleu_scores"] = txt_bleu
-            valid_scores["chrf"] = txt_chrf
-            valid_scores["rouge"] = txt_rouge
+            valid_scores["bleu"] = torch.tensor(txt_bleu["bleu4"], device='cuda')
+            valid_scores["bleu_scores"] = {k: torch.tensor(
+                s, device='cuda') for k, s in txt_bleu.items()}
+            valid_scores["chrf"] = torch.tensor(txt_chrf, device='cuda')
+            valid_scores["rouge"] = torch.tensor(txt_rouge, device='cuda')
 
     results = {
         "valid_scores": valid_scores,
@@ -285,6 +304,46 @@ def validate_on_data(
         results["txt_ref"] = txt_ref
         results["txt_hyp"] = txt_hyp
 
+    #all gather
+    valid_scores_cuda_gather = [None for _ in range(int(os.environ['WORLD_SIZE']))]
+    # print('rank {}, {}'.format(
+    #     os.environ['LOCAL_RANK'], results['valid_scores']))
+    torch.distributed.all_gather_object(
+        valid_scores_cuda_gather, results['valid_scores'])
+    #compute mean
+    # not strictly corpus-level
+    estimated_mean_scores = {}
+    for k,v in results['valid_scores'].items():
+        if k != 'num_seq':
+            if type(v) == dict:
+                estimated_mean_scores[k] = {}
+                for k_, v_ in v.items():
+                    estimated_mean_scores[k][k_] = 0
+            else:
+                estimated_mean_scores[k] = 0
+    total_num = 0
+    for ri, scores_split in enumerate(valid_scores_cuda_gather):
+        total_num += int(scores_split['num_seq'].detach().cpu())
+
+    for ri, scores_split in enumerate(valid_scores_cuda_gather):
+        for k, s in scores_split.items():
+            # print('rank{}, {}:{}'.format(os.environ['LOCAL_RANK'],
+            #     k, s))
+            num_seq = scores_split['num_seq'].detach().cpu().numpy()
+            if k!='num_seq':
+                if type(s)==dict:
+                    for k_, s_ in s.items():
+                        s_ = s_.detach().cpu().numpy()
+                        estimated_mean_scores[k][k_] += num_seq*s_/total_num
+                else:
+                    s = s.detach().cpu().numpy()
+                    estimated_mean_scores[k] += num_seq*s/total_num
+
+    for k, s in estimated_mean_scores.items():
+        results['valid_scores'][k] = s
+    print('rank{}: estimated_mean {}'.format(
+        os.environ['LOCAL_RANK'], estimated_mean_scores))
+    # input()
     return results
 
 
@@ -355,6 +414,10 @@ def test(
 
     if use_cuda:
         model.cuda()
+        assert 'LOCAL_RANK' in os.environ, 'Only support distributed training'
+        local_rank = int(os.environ['LOCAL_RANK'])
+        model = DDP(model, device_ids=[
+            local_rank], output_device=local_rank)
 
     # Data Augmentation Parameters
     frame_subsampling_ratio = cfg["data"].get("frame_subsampling_ratio", None)
@@ -380,7 +443,7 @@ def test(
 
     if do_recognition:
         recognition_loss_function = torch.nn.CTCLoss(
-            blank=model.gls_vocab.stoi[SIL_TOKEN], zero_infinity=True
+            blank=model.module.gls_vocab.stoi[SIL_TOKEN], zero_infinity=True
         )
         if use_cuda:
             recognition_loss_function.cuda()
@@ -392,7 +455,7 @@ def test(
             translation_loss_function.cuda()
 
     # NOTE (Cihan): Currently Hardcoded to be 0 for TensorFlow decoding
-    assert model.gls_vocab.stoi[SIL_TOKEN] == 0
+    assert model.module.gls_vocab.stoi[SIL_TOKEN] == 0
 
     if do_recognition:
         # Dev Recognition CTC Beam Search Results

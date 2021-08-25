@@ -82,6 +82,7 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
         return torch.stack([torch.stack(ft, dim=0) for ft in features], dim=0)
 
     sequence_field = data.RawField()
+    num_frames_field = data.RawField()
     signer_field = data.RawField()
 
     sgn_field = data.Field(
@@ -115,15 +116,20 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
         include_lengths=True,
     )
 
+    if input_data == 'feature':
+        filter_pred = lambda x: len(vars(x)["sgn"]) <= max_sent_length and len(vars(x)["txt"]) <= max_sent_length
+    else:
+        filter_pred = lambda x: vars(x)['num_frames'] <= max_sent_length and len(
+            vars(x)["txt"]) <= max_sent_length
     train_data = SignTranslationDataset(
         input_data=input_data,
         path=train_paths,
-        fields=(sequence_field, signer_field, sgn_field, gls_field, txt_field),
-        filter_pred=lambda x: len(vars(x)["txt"]) <= max_sent_length
-        # filter_pred=lambda x: len(vars(x)["sgn"]) <= max_sent_length
-        # and len(vars(x)["txt"]) <= max_sent_length,
+        fields=(sequence_field, signer_field, sgn_field, gls_field, txt_field, num_frames_field),
+        # filter_pred=lambda x: len(vars(x)["txt"]) <= max_sent_length
+        filter_pred=filter_pred
     )
-
+    # print(list(train_data.num_frames)[:10])
+    # input()
     gls_max_size = data_cfg.get("gls_voc_limit", sys.maxsize)
     gls_min_freq = data_cfg.get("gls_voc_min_freq", 1)
     txt_max_size = data_cfg.get("txt_voc_limit", sys.maxsize)
@@ -158,7 +164,8 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
     dev_data = SignTranslationDataset(
         input_data=input_data,
         path=dev_paths,
-        fields=(sequence_field, signer_field, sgn_field, gls_field, txt_field),
+        fields=(sequence_field, signer_field, sgn_field,
+                gls_field, txt_field, num_frames_field),
     )
     random_dev_subset = data_cfg.get("random_dev_subset", -1)
     if random_dev_subset > -1:
@@ -173,7 +180,8 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
     test_data = SignTranslationDataset(
         input_data=input_data,
         path=test_paths,
-        fields=(sequence_field, signer_field, sgn_field, gls_field, txt_field),
+        fields=(sequence_field, signer_field, sgn_field,
+                gls_field, txt_field, num_frames_field),
     )
 
     gls_field.vocab = gls_vocab
@@ -284,7 +292,7 @@ def make_data_iter(
 
     assert batch_type=='sentence'
     if distributed:
-        sampler = torch.utils.data.distributed.DistributedSampler(dataset)
+        sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=shuffle)
     else:
         if shuffle:
             sampler = torch.utils.data.RandomSampler(dataset)

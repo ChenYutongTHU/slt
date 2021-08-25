@@ -27,7 +27,7 @@ class SignTranslationDataset(data.Dataset):
         self,
         input_data: str,
         path: str,
-        fields: Tuple[RawField, RawField, Field, Field, Field],
+        fields: Tuple,
         **kwargs
     ):
         """Create a SignTranslationDataset given paths and fields.
@@ -56,6 +56,7 @@ class SignTranslationDataset(data.Dataset):
                     ("signer", fields[1]),
                     ("gls", fields[3]),
                     ("txt", fields[4]),
+                    ("num_frames", fields[5])
                 ]
         elif input_data == 'images':
             fields = fields[:2]+fields[3:]
@@ -84,6 +85,10 @@ class SignTranslationDataset(data.Dataset):
                         "text": s["text"],
                         "sign": s["sign"],
                     }
+                    if input_data=='image':
+                        assert 'num_frames' in s
+                    if 'num_frames' in s:
+                        samples[seq_id]['num_frames'] = s['num_frames']
 
         examples = []
         for s in samples:
@@ -110,6 +115,7 @@ class SignTranslationDataset(data.Dataset):
                             sample["signer"],
                             sample["gloss"].strip(),
                             sample["text"].strip(),
+                            sample["num_frames"]
                         ],
                         fields,
                     )

@@ -522,65 +522,69 @@ class TrainManager:
                 if self.steps % self.validation_freq == 0 and update:
                     self.logger.info('Validate on data on process rank 0')
                     valid_start_time = time.time()
-                    if is_main_process():
-                        self.logger.info('validate_on_data!')
-                        # TODO (Cihan): There must be a better way of passing
-                        #   these recognition only and translation only parameters!
-                        #   Maybe have a NamedTuple with optional fields?
-                        #   Hmm... Future Cihan's problem.
-                        val_res = validate_on_data(
-                            model=self.model.module,
-                            data=valid_data,
-                            split='dev',
-                            cfg=self.cfg,
-                            batch_size=self.eval_batch_size,
-                            use_cuda=self.use_cuda,
-                            batch_type=self.eval_batch_type,
-                            dataset_version=self.dataset_version,
-                            sgn_dim=self.feature_size,
-                            txt_pad_index=self.txt_pad_index,
-                            # Recognition Parameters
-                            do_recognition=self.do_recognition,
-                            recognition_loss_function=self.recognition_loss_function
-                            if self.do_recognition
-                            else None,
-                            recognition_loss_weight=self.recognition_loss_weight
-                            if self.do_recognition
-                            else None,
-                            recognition_beam_size=self.eval_recognition_beam_size
-                            if self.do_recognition
-                            else None,
-                            # Translation Parameters
-                            do_translation=self.do_translation,
-                            translation_loss_function=self.translation_loss_function
-                            if self.do_translation
-                            else None,
-                            translation_max_output_length=self.translation_max_output_length
-                            if self.do_translation
-                            else None,
-                            level=self.level if self.do_translation else None,
-                            translation_loss_weight=self.translation_loss_weight
-                            if self.do_translation
-                            else None,
-                            translation_beam_size=self.eval_translation_beam_size
-                            if self.do_translation
-                            else None,
-                            translation_beam_alpha=self.eval_translation_beam_alpha
-                            if self.do_translation
-                            else None,
-                            frame_subsampling_ratio=self.frame_subsampling_ratio,
-                        )
-                        self.model.train()
+                    self.logger.info('validate_on_data!')
+                    # TODO (Cihan): There must be a better way of passing
+                    #   these recognition only and translation only parameters!
+                    #   Maybe have a NamedTuple with optional fields?
+                    #   Hmm... Future Cihan's problem.
 
+                    #By  Yutong multi-gpu evaluation and then all-gather
+                    val_res = validate_on_data(
+                        model=self.model,
+                        data=valid_data,
+                        split='dev',
+                        cfg=self.cfg,
+                        batch_size=self.eval_batch_size,
+                        use_cuda=self.use_cuda,
+                        batch_type=self.eval_batch_type,
+                        dataset_version=self.dataset_version,
+                        sgn_dim=self.feature_size,
+                        txt_pad_index=self.txt_pad_index,
+                        # Recognition Parameters
+                        do_recognition=self.do_recognition,
+                        recognition_loss_function=self.recognition_loss_function
+                        if self.do_recognition
+                        else None,
+                        recognition_loss_weight=self.recognition_loss_weight
+                        if self.do_recognition
+                        else None,
+                        recognition_beam_size=self.eval_recognition_beam_size
+                        if self.do_recognition
+                        else None,
+                        # Translation Parameters
+                        do_translation=self.do_translation,
+                        translation_loss_function=self.translation_loss_function
+                        if self.do_translation
+                        else None,
+                        translation_max_output_length=self.translation_max_output_length
+                        if self.do_translation
+                        else None,
+                        level=self.level if self.do_translation else None,
+                        translation_loss_weight=self.translation_loss_weight
+                        if self.do_translation
+                        else None,
+                        translation_beam_size=self.eval_translation_beam_size
+                        if self.do_translation
+                        else None,
+                        translation_beam_alpha=self.eval_translation_beam_alpha
+                        if self.do_translation
+                        else None,
+                        frame_subsampling_ratio=self.frame_subsampling_ratio,
+                    )
+                    self.model.train()
+                    if distributed:
+                        torch.distributed.barrier()
+                        self.logger.info('rank{} barrier!'.format(os.environ['LOCAL_RANK']))
+                    if is_main_process():
                         if self.do_recognition:
                             # Log Losses and ppl
                             self.tb_writer.add_scalar(
-                                "valid/valid_recognition_loss",
+                                "valid/valid_recognition_loss_rank0",
                                 val_res["valid_recognition_loss"],
                                 self.steps,
                             )
                             self.tb_writer.add_scalar(
-                                "valid/wer", val_res["valid_scores"]["wer"], self.steps
+                                "valid/wer_rank0", val_res["valid_scores"]["wer"], self.steps
                             )
                             self.tb_writer.add_scalars(
                                 "valid/wer_scores",
@@ -590,12 +594,12 @@ class TrainManager:
 
                         if self.do_translation:
                             self.tb_writer.add_scalar(
-                                "valid/valid_translation_loss",
+                                "valid/valid_translation_loss_rank0",
                                 val_res["valid_translation_loss"],
                                 self.steps,
                             )
                             self.tb_writer.add_scalar(
-                                "valid/valid_ppl", val_res["valid_ppl"], self.steps
+                                "valid/valid_ppl_rank0", val_res["valid_ppl"], self.steps
                             )
 
                             # Log Scores
@@ -614,32 +618,19 @@ class TrainManager:
                                 self.steps,
                             )
 
-                        if self.early_stopping_metric == "recognition_loss":
-                            assert self.do_recognition
-                            ckpt_score = val_res["valid_recognition_loss"]
-                        elif self.early_stopping_metric == "translation_loss":
-                            assert self.do_translation
-                            ckpt_score = val_res["valid_translation_loss"]
-                        elif self.early_stopping_metric in ["ppl", "perplexity"]:
-                            assert self.do_translation
-                            ckpt_score = val_res["valid_ppl"]
-                        else:
-                            ckpt_score = val_res["valid_scores"][self.eval_metric]
-                        
-                        if distributed:
-                            #broadcast to other processes
-                            self.logger.info(
-                                'broadcast from 0 to others: ckpt_score={}'.format(float(ckpt_score)))
-                            torch.distributed.broadcast(torch.tensor(ckpt_score).cuda(), src=0)                      
-
+                    if self.early_stopping_metric == "recognition_loss":
+                        assert self.do_recognition
+                        ckpt_score = val_res["valid_recognition_loss"]
+                    elif self.early_stopping_metric == "translation_loss":
+                        assert self.do_translation
+                        ckpt_score = val_res["valid_translation_loss"]
+                    elif self.early_stopping_metric in ["ppl", "perplexity"]:
+                        assert self.do_translation
+                        ckpt_score = val_res["valid_ppl"]
                     else:
-                        if distributed:
-                            ckpt_score = torch.empty(1,).cuda()
-                            torch.distributed.broadcast(ckpt_score, src=0)
-                            self.logger.info('broadcast from 0 to {}: ckpt_score {}'.format(os.environ['LOCAL_RANK'],float(ckpt_score)))
+                        ckpt_score = val_res["valid_scores"][self.eval_metric]
 
-                    if distributed:
-                        torch.distributed.barrier()
+                    self.logger.info('rank{} ckpt_score {}'.format(os.environ['LOCAL_RANK'], ckpt_score))
 
                     new_best = False
                     if self.is_best(ckpt_score):
@@ -1149,7 +1140,6 @@ def train(cfg_file: str) -> None:
     train_data, dev_data, test_data, gls_vocab, txt_vocab, gls_counter, txt_counter = load_data(
         data_cfg=cfg["data"]
         )
-
     # build model and load parameters into it
     do_recognition = cfg["training"].get("recognition_loss_weight", 1.0) > 0.0
     do_translation = cfg["training"].get("translation_loss_weight", 1.0) > 0.0
@@ -1248,13 +1238,13 @@ def train(cfg_file: str) -> None:
 
     # predict with the best model on validation and test
     # (if test data is available)
-    if is_main_process():
-        ckpt = "{}/{}.ckpt".format(trainer.model_dir, trainer.best_ckpt_iteration)
-        output_name = "best.IT_{:08d}".format(trainer.best_ckpt_iteration)
-        output_path = os.path.join(trainer.model_dir, output_name)
-        logger = trainer.logger
-        del trainer
-        test(cfg_file, ckpt=ckpt, output_path=output_path, logger=logger)
+
+    ckpt = "{}/{}.ckpt".format(trainer.model_dir, trainer.best_ckpt_iteration)
+    output_name = "best.IT_{:08d}".format(trainer.best_ckpt_iteration)
+    output_path = os.path.join(trainer.model_dir, output_name)
+    logger = trainer.logger
+    del trainer
+    test(cfg_file, ckpt=ckpt, output_path=output_path, logger=logger)
 
 
 if __name__ == "__main__":

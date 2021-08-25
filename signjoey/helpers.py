@@ -4,7 +4,7 @@ Collection of helper functions
 """
 import copy
 import glob
-import os
+import os, math
 import os.path
 import errno
 import shutil
@@ -21,6 +21,23 @@ from torchtext.data import Dataset
 import yaml
 from signjoey.vocabulary import GlossVocabulary, TextVocabulary
 
+
+def get_distributed_sampler_index(total_len, batch_size, rank, world_size):
+    indices = list(range(total_len))
+    num_replicas = world_size
+    num_samples = math.ceil(total_len / num_replicas)
+    total_size = num_samples * num_replicas
+    padding_size = total_size - len(indices)
+    padding_indices = []
+    if padding_size <= len(indices):
+        indices += [-1]*padding_size
+    else:
+        indices += [-1]*padding_size
+    assert len(indices) == total_size, (len(indices),total_size)
+    indices = indices[rank:total_size:num_replicas]
+    assert len(indices) == num_samples, (len(indices),num_samples)
+    indices = [ind for ind in indices if not ind==-1]
+    return indices
 
 def make_model_dir(model_dir: str, overwrite: bool = False) -> str:
     """
