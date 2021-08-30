@@ -369,17 +369,17 @@ class Batch_from_examples(Batch):
         #     self._make_cuda()
 
     def get_selected_indexs(self, vlen):
-        if vlen < self.max_num_frames:
+        if vlen <= self.max_num_frames:
             frame_index = np.arange(vlen)
             valid_len = vlen
         else:
             sequence = np.arange(vlen)
-            an = (vlen - self.num_frames)//2
-            en = vlen - self.num_frames - an
+            an = (vlen - self.max_num_frames)//2
+            en = vlen - self.max_num_frames - an
             frame_index = sequence[an: -en]
-            valid_len = self.num_frames
+            valid_len = self.max_num_frames
 
-        assert len(frame_index) == valid_len
+        assert len(frame_index) == valid_len, (frame_index, valid_len)
         return frame_index, valid_len
 
     def load_frames(self, file_list, selected_indexs=None):

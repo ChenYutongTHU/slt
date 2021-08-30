@@ -108,6 +108,12 @@ def validate_on_data(
         - valid_attention_scores: attention scores for validation hypotheses
     """
     assert type(model) == torch.nn.parallel.DistributedDataParallel
+    input_data = cfg['data'].get('input_data', 'feature')
+    if input_data =='feature':
+        tokenizer_type = None
+    else:
+        tokenizer_type = cfg['model']['tokenizer']['architecture']
+
     valid_iter, valid_sampler = make_data_iter(
         dataset=data,
         collate_fn=lambda x: Batch_from_examples(
@@ -119,9 +125,9 @@ def validate_on_data(
             input_data=cfg['data'].get('input_data','feature'),
             img_path=cfg['data'].get('img_path', None),
             img_transform=cfg['model']['cnn']['type']
-            if cfg['model']['tokenizer']['architecture'] == 'cnn'
+            if tokenizer_type=='cnn'
             else None,
-            tokenizer_type=cfg['model']['tokenizer']['architecture'],
+            tokenizer_type=tokenizer_type,
             max_num_frames=cfg['data']['max_sent_length'],
             split=split,
             use_cuda=use_cuda,
