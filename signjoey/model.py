@@ -1,5 +1,7 @@
 # coding: utf-8
 import os
+from signjoey.model_3d import backbone_3D
+from utils_3d import get_premodel_weight, pre_task
 import tensorflow as tf
 
 tf.config.set_visible_devices([], "GPU")
@@ -62,7 +64,7 @@ def get_loss_for_batch(
             txt_mask=batch.txt_mask,
             )
     else:
-        decoder_outputs, gloss_probabilities = model(
+        (decoder_outputs, gloss_probabilities), batch.sgn_mask, batch.sgn_lengths = model(
             sgn_img=batch.sgn_img,
             sgn_mask=batch.sgn_mask,
             sgn_lengths=batch.sgn_lengths,
@@ -468,10 +470,11 @@ class SignModel(nn.Module):
         )
 
 
-class CNN_SignModel(nn.Module):
-    def __init__(self, cnn, signmodel):
+class Tokenizer_SignModel(nn.Module):
+    def __init__(self, tokenizer_type, tokenizer, signmodel):
         super().__init__()
-        self.cnn = cnn
+        self.tokenizer_type = tokenizer_type
+        self.tokenizer = tokenizer
         self.signmodel = signmodel  # already initialized
         self.txt_pad_index = self.signmodel.txt_pad_index
         self.txt_bos_index = self.signmodel.txt_bos_index
@@ -481,34 +484,55 @@ class CNN_SignModel(nn.Module):
         self.do_recognition = self.signmodel.do_recognition
         self.do_translation = self.signmodel.do_translation
 
-    def extract_cnn_feature(
+    def visual_tokenize(
         self,
         sgn_img: Tensor,  # B,C,H,W
         sgn_mask: Tensor,
         sgn_lengths: Tensor,
     ) -> (Tensor):
-        sgn_feature = self.cnn(sgn_img)
-        #split and pad#
-        assert torch.sum(
-            sgn_lengths) == sgn_feature.shape[0], (sgn_feature.shape, torch.sum(sgn_lengths))
-        sgn_seqs = torch.split(sgn_feature, sgn_lengths.tolist(), dim=0)
-        sgn = []
-        pad_length = sgn_mask.shape[-1]  # L
-        for seq in sgn_seqs:
-            #seq L,D
-            if seq.shape[0] >= pad_length:
-                padded_seq = seq[:pad_length, :]  # pl,d
-            else:
-                padding_len = pad_length-seq.shape[0]
-                paddings = torch.zeros(size=[padding_len, seq.shape[1]],
-                                       dtype=seq.dtype, device=seq.device)  # L,d
-                padded_seq = torch.cat([seq, paddings], dim=0)  # pl,d
-            sgn.append(padded_seq)
-        sgn = torch.stack(sgn, dim=0)
-        assert sgn.shape[0] == sgn_mask.shape[0], (
-            sgn.shape, sgn_mask.shape)
-        assert sgn.shape[1] == sgn_mask.shape[2], (sgn.shape, sgn_mask.shape)
-        return sgn
+        sgn_feature = self.tokenizer(sgn_img)
+        if self.tokenizer_type == 'cnn':
+            #split and pad#
+            assert torch.sum(
+                sgn_lengths) == sgn_feature.shape[0], (sgn_feature.shape, torch.sum(sgn_lengths))
+            sgn_seqs = torch.split(sgn_feature, sgn_lengths.tolist(), dim=0)
+            sgn = []
+            pad_length = sgn_mask.shape[-1]  # L
+            for seq in sgn_seqs:
+                #seq L,D
+                if seq.shape[0] >= pad_length:
+                    padded_seq = seq[:pad_length, :]  # pl,d
+                else:
+                    padding_len = pad_length-seq.shape[0]
+                    paddings = torch.zeros(size=[padding_len, seq.shape[1]],
+                                        dtype=seq.dtype, device=seq.device)  # L,d
+                    padded_seq = torch.cat([seq, paddings], dim=0)  # pl,d
+                sgn.append(padded_seq)
+            sgn = torch.stack(sgn, dim=0)
+            assert sgn.shape[0] == sgn_mask.shape[0], (
+                sgn.shape, sgn_mask.shape)
+            assert sgn.shape[1] == sgn_mask.shape[2], (sgn.shape, sgn_mask.shape)
+            return sgn, sgn_mask, sgn_lengths
+        elif self.tokenizer_type in ['s3d','s3ds']:
+            #Spatial average pooling and MASKING
+            B, _, T_in, _, _ = sgn_img.shape
+            B, _, T_out, _, _ = sgn_feature.shape
+            pooled_sgn_feature = torch.mean(sgn_feature, dim=[3,4]) #B, D, T_out
+            sgn = torch.transpose(pooled_sgn_feature, 1, 2) #b, t_OUT, d
+            sgn_mask = torch.zeros([B,1,T_out], dtype=torch.bool, device=sgn.device)
+            valid_len_out = torch.floor(sgn_lengths*T_out/T_in).long() #B,
+            for bi in range(B):
+                sgn_mask[bi, :, :valid_len_out[bi]] = True
+
+            # #debug
+            # print('input shape ', sgn_img.shape)
+            # print('output shape ', sgn_feature.shape)
+            # print('valid_len_in ', sgn_lengths)
+            # print('valid_len_out ', valid_len_out)
+            # print('sgn_mask ',sgn_mask)
+            return sgn, sgn_mask, valid_len_out
+        else:
+            raise NotImplementedError
 
     def forward(
         self,
@@ -518,7 +542,10 @@ class CNN_SignModel(nn.Module):
         **kwargs,
     ) -> (Tensor, Tensor, Tensor, Tensor):
 
-        sgn = self.extract_cnn_feature(
+        if self.tokenizer_type in ['s3d','s3ds','s3dt','i3d']:
+            assert sgn_img.dim() == 5, sgn_img.shape #B,C,T,H,W
+            assert sgn_mask==None
+        sgn, sgn_mask, sgn_lengths = self.visual_tokenize(
             sgn_img=sgn_img,
             sgn_mask=sgn_mask,
             sgn_lengths=sgn_lengths)
@@ -529,7 +556,7 @@ class CNN_SignModel(nn.Module):
             sgn_lengths=sgn_lengths,
             **kwargs,
         )
-        return outputs
+        return outputs, sgn_mask, sgn_lengths
 
     def get_loss_for_batch(
         self,
@@ -537,7 +564,7 @@ class CNN_SignModel(nn.Module):
         **kwargs,
     ) -> (Tensor, Tensor):
         assert batch.sgn == None
-        batch.sgn = self.extract_cnn_feature(
+        batch.sgn, batch.sgn_mask, batch.sgn_lengths = self.visual_tokenize(
             sgn_img=batch.sgn_img,
             sgn_mask=batch.sgn_mask,
             sgn_lengths=batch.sgn_lengths)
@@ -553,7 +580,7 @@ class CNN_SignModel(nn.Module):
         **kwargs,
     ) -> (np.array, np.array, np.array):
         assert batch.sgn == None
-        batch.sgn = self.extract_cnn_feature(
+        batch.sgn, batch.sgn_mask, batch.sgn_lengths = self.visual_tokenize(
             sgn_img=batch.sgn_img,
             sgn_mask=batch.sgn_mask,
             sgn_lengths=batch.sgn_lengths)
@@ -562,8 +589,6 @@ class CNN_SignModel(nn.Module):
             **kwargs
         )
         return outputs
-
-
 
 def build_model(
     cfg: dict,
@@ -686,9 +711,36 @@ def build_model(
     if input_data == 'feature':
         return sign_model
     else:
-        cnn = CNN(pretrained_ckpt=cfg["cnn"].get('pretrained_ckpt', None), 
-                    freeze_resnet_layer=cfg["cnn"].get('freeze_resnet_layer',0))
-        cnn_signmodel = CNN_SignModel(
-            cnn=cnn, signmodel=sign_model)  # already initialized
+        if cfg["tokenizer"]["architecture"] == 'cnn':
+            tokenizer = CNN(pretrained_ckpt=cfg["cnn"].get('pretrained_ckpt', None), 
+                        freeze_resnet_layer=cfg["cnn"].get('freeze_resnet_layer',0))
+            # cnn_signmodel = CNN_SignModel(
+            #     cnn=cnn, signmodel=sign_model)  # already initialized
 
-        return cnn_signmodel
+        elif cfg["tokenizer"]["architecture"] in ['s3d','s3ds']:
+            tokenizer = backbone_3D(cfg["tokenizer"]["pretrained_ckpt"],
+                              network=cfg["tokenizer"]["architecture"])
+            
+            network = cfg["tokenizer"]["architecture"]
+            pretask = pre_task[network]
+            ckpt_filename = os.path.join(
+                cfg["tokenizer"]["pretrained_ckpt"], 
+                '%s_%s_ckpt' % (network, pretask))
+            success = get_premodel_weight(
+                network=network,
+                pretask=pretask,
+                model_without_dp=tokenizer, 
+                model_path=ckpt_filename)
+            if success:
+                print('Load model {} from {} ... success {}'.format(
+                    tokenizer, ckpt_filename, success))
+            else:
+                raise NotImplementedError
+        else:
+            raise ValueError
+
+        tokenizer_signmodel = Tokenizer_SignModel(
+            tokenizer_type=cfg["tokenizer"]["architecture"],
+            tokenizer=tokenizer,
+            signmodel=sign_model)
+        return tokenizer_signmodel

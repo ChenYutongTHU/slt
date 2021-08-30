@@ -119,8 +119,10 @@ def validate_on_data(
             input_data=cfg['data'].get('input_data','feature'),
             img_path=cfg['data'].get('img_path', None),
             img_transform=cfg['model']['cnn']['type']
-            if cfg['data'].get('input_data', 'feature') == 'image'
+            if cfg['model']['tokenizer']['architecture'] == 'cnn'
             else None,
+            tokenizer_type=cfg['model']['tokenizer']['architecture'],
+            max_num_frames=cfg['data']['max_sent_length'],
             split=split,
             use_cuda=use_cuda,
             frame_subsampling_ratio=frame_subsampling_ratio,

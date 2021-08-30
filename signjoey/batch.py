@@ -4,9 +4,10 @@ import random
 import torch
 import numpy as np
 import torchtext
-
+import _init_paths
 from PIL import Image
 import torchvision
+from utils_3d import get_data_transform, pre_task
 
 def scale_function(x):
     return x*255
@@ -148,7 +149,8 @@ class Batch:
             self.sgn = self.sgn.cuda()
         else:
             self.sgn_img = self.sgn_img.cuda()
-        self.sgn_mask = self.sgn_mask.cuda()
+        if self.sgn_mask!=None:
+            self.sgn_mask = self.sgn_mask.cuda()
 
         if self.txt_input is not None:
             self.txt = self.txt.cuda()
@@ -204,6 +206,8 @@ class Batch_from_examples(Batch):
         input_data: str = 'feature',
         img_path: str = None,
         img_transform: str = None,
+        tokenizer_type: str = None, #s3dt ..
+        max_num_frames: int=400,
         split: str = None,
         is_train: bool = False,
         use_cuda: bool = False,
@@ -216,6 +220,8 @@ class Batch_from_examples(Batch):
         self.sequence = torch_batch.sequence
         self.signer = torch_batch.signer
         self.input_data = input_data
+        self.max_num_frames = max_num_frames
+        self.tokenizer_type = tokenizer_type
         if input_data == 'feature':
             self.sgn, self.sgn_lengths = torch_batch.sgn
             # Here be dragons
@@ -256,7 +262,7 @@ class Batch_from_examples(Batch):
             self.sgn_dim = sgn_dim
             self.sgn_mask = (self.sgn != torch.zeros(
                 sgn_dim))[..., 0].unsqueeze(1)
-        elif input_data == 'image':
+        elif input_data == 'image' and self.tokenizer_type=='cnn':
             assert split != None, (split)
             if split == 'train':
                 assert is_train
@@ -292,7 +298,42 @@ class Batch_from_examples(Batch):
             self.sgn_mask = torch.tensor(self.sgn_mask, dtype=torch.bool).unsqueeze(1)
             self.sgn_img = torch.stack(self.sgn_img, dim=0) #(l1+l2+l3+..l4), C,H,W
         else:
-            raise
+            # 3d preprocess, adapted from Menghan's code
+            dataset_info = dict()
+            dataset_info['model'], dataset_info['pretask'] = tokenizer_type, pre_task[tokenizer_type]
+            dataset_info['img_size'] = 224
+            dataset_info['aug_hflip'] = False
+            dataset_info['use_cache'] = False
+            self.transform = get_data_transform(
+                mode='train' if is_train else 'test', 
+                dataset_info=dataset_info)
+            self.sgn = None
+            self.sgn_lengths = []
+            self.sgn_img = []
+            unpadded_seq = []
+            assert os.path.isdir(img_path), (img_path)
+            for idx, name in enumerate(self.sequence):
+                seq_folder = os.path.join(img_path, name)
+                assert os.path.isdir(seq_folder), seq_folder
+                image_path_list = [os.path.join(seq_folder, ss) for ss in sorted(
+                    os.listdir(seq_folder)) if ss[-4:] == '.png']
+                selected_indexs, valid_len = self.get_selected_indexs(
+                    len(image_path_list))
+                self.sgn_lengths.append(valid_len)  # l0,l1,l2,l3,l4
+                frame_seq = self.load_frames(image_path_list, selected_indexs)
+                if self.transform is not None: frame_seq = self.transform(frame_seq) #c,t,h,w
+                unpadded_seq.append(frame_seq)
+            #padding to maxmimum length   
+            self.sgn_img = self.padding2maxlength(unpadded_seq) 
+
+
+            # create sgn_mask according to max_length & sgn_lengths
+            self.max_length = max(self.sgn_lengths)
+            self.sgn_mask = None
+            self.sgn_lengths = torch.tensor(
+                self.sgn_lengths, dtype=torch.long)  # B,
+
+
         # Text
         self.txt = None
         self.txt_mask = None
@@ -307,7 +348,7 @@ class Batch_from_examples(Batch):
         self.num_txt_tokens = None
         self.num_gls_tokens = None
         self.use_cuda = use_cuda
-        self.num_seqs = self.sgn_mask.size(0)
+        self.num_seqs = self.sgn_lengths.size(0)
 
         if hasattr(torch_batch, "txt"):
             txt, txt_lengths = torch_batch.txt
@@ -326,3 +367,53 @@ class Batch_from_examples(Batch):
 
         # if use_cuda:
         #     self._make_cuda()
+
+    def get_selected_indexs(self, vlen):
+        if vlen < self.max_num_frames:
+            frame_index = np.arange(vlen)
+            valid_len = vlen
+        else:
+            sequence = np.arange(vlen)
+            an = (vlen - self.num_frames)//2
+            en = vlen - self.num_frames - an
+            frame_index = sequence[an: -en]
+            valid_len = self.num_frames
+
+        assert len(frame_index) == valid_len
+        return frame_index, valid_len
+
+    def load_frames(self, file_list, selected_indexs=None):
+        def read_img(path):
+            #rgb_im = np.array(Image.open(path).convert("RGB"), np.float32)
+            rgb_im = Image.open(path).convert("RGB")
+            return rgb_im
+        if selected_indexs is None:
+            selected_indexs = np.arange(len(file_list))
+        rgb_imgs = [read_img(file_list[i]) for i in selected_indexs]
+        return rgb_imgs
+
+    def padding2maxlength(self, x, pad_method='zero'):
+        #x [[seq_len,str,valid_len],[],[],...,[]]
+        max_length = max([e.shape[1] for e in x])
+        #padding to max_length
+        video_inputs = []
+        for seq in x:
+            C,vl,H,W = seq.shape
+            if vl<max_length:
+                if pad_method=='zero':#channel1!
+                    padding = torch.zeros([C,max_length-vl,H,W], dtype=seq.dtype, device=seq.device)
+                    padded_video_inputs = torch.cat([seq, padding], dim=1) 
+                elif pad_method=='replicate':
+                    padding = seq[:,-1:,:,:] #C,1,H,W
+                    padding = torch.tile(padding, (1,max_length-vl,1,1)) #C,MAX_LENGTH-VL,H,W
+                    padded_video_inputs = torch.cat([seq, padding], dim=1)
+                else:
+                    raise ValueError
+            else:
+                padded_video_inputs = seq
+            assert padded_video_inputs.shape == torch.Size(
+                [C, max_length, H, W]), (padded_video_inputs.shape, [C, max_length, H, W])
+            video_inputs.append(padded_video_inputs)
+
+        video_inputs = torch.stack(video_inputs, dim=0) #B,C,T,H,W
+        return video_inputs 

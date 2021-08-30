@@ -60,6 +60,11 @@ class TrainManager:
         self.cfg = config
         self.train_config = config['training']
         self.input_data = config["data"].get("input_data", "feature")
+        if self.input_data =='feature':
+            self.tokenizer_type = None
+        else:
+            self.tokenizer_type = config['model']['tokenizer']['architecture']
+
         self.distributed = distributed
         # files for logging and storing
         if is_main_process():
@@ -394,8 +399,10 @@ class TrainManager:
                     input_data=self.input_data,
                     img_path=self.cfg['data'].get('img_path', None),
                     img_transform=self.cfg['model']['cnn']['type']
-                    if self.input_data=='image'
+                    if self.tokenizer_type=='cnn'
                     else None,
+                    tokenizer_type=self.tokenizer_type,
+                    max_num_frames=self.cfg['data']['max_sent_length'],
                     split='train',
                     use_cuda=self.use_cuda,
                     frame_subsampling_ratio=self.frame_subsampling_ratio,
@@ -442,7 +449,7 @@ class TrainManager:
                 #     random_frame_subsampling=self.random_frame_subsampling,
                 #     random_frame_masking_ratio=self.random_frame_masking_ratio,
                 # )
-                # print(batch.sgn_mask.shape)
+                #print(batch.sgn_mask.shape)
                 # print(batch.sgn_mask)
                 # print(batch.sgn_lengths)
                 # print(torch.sum(batch.sgn_lengths))
@@ -1156,8 +1163,10 @@ def train(cfg_file: str) -> None:
             do_translation=do_translation,
         )
     elif input_data == 'image':
-        assert cfg["data"]["feature_size"] == 2048, 'feature_size={}? When input_data is img, only support resnet50 logits.'.format(
-            cfg["data"]["feature_size"])
+        if cfg["model"]["tokenizer"]["architecture"] == 'cnn':
+            assert cfg["data"]["feature_size"] == 2048, 'feature_size={}? When input_data is img->cnn, only support resnet50 logits.'.format(
+                cfg["data"]["feature_size"])
+
         model = build_model(
             cfg=cfg["model"],
             gls_vocab=gls_vocab,
@@ -1182,7 +1191,7 @@ def train(cfg_file: str) -> None:
     trainer.logger.info('# Total trainable parameters = {}'.format(total_params_trainable))
 
     if input_data=='image':
-        for sub in ['cnn', 'signmodel']:
+        for sub in ['tokenizer', 'signmodel']:
             total_params_trainable = sum(p.numel()
                                         for p in getattr(model, sub).parameters() if p.requires_grad)
             total_params = sum(p.numel() for p in getattr(model, sub).parameters())
