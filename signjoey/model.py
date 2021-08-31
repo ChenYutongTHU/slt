@@ -64,7 +64,7 @@ def get_loss_for_batch(
             txt_mask=batch.txt_mask,
             )
     else:
-        (decoder_outputs, gloss_probabilities), batch.sgn_mask, batch.sgn_lengths = model(
+        (decoder_outputs, gloss_probabilities), batch.sgn, batch.sgn_mask, batch.sgn_lengths = model(
             sgn_img=batch.sgn_img,
             sgn_mask=batch.sgn_mask,
             sgn_lengths=batch.sgn_lengths,
@@ -556,7 +556,7 @@ class Tokenizer_SignModel(nn.Module):
             sgn_lengths=sgn_lengths,
             **kwargs,
         )
-        return outputs, sgn_mask, sgn_lengths
+        return outputs, sgn, sgn_mask, sgn_lengths
 
     def get_loss_for_batch(
         self,
@@ -579,11 +579,12 @@ class Tokenizer_SignModel(nn.Module):
         batch: Batch,
         **kwargs,
     ) -> (np.array, np.array, np.array):
-        assert batch.sgn == None
-        batch.sgn, batch.sgn_mask, batch.sgn_lengths = self.visual_tokenize(
-            sgn_img=batch.sgn_img,
-            sgn_mask=batch.sgn_mask,
-            sgn_lengths=batch.sgn_lengths)
+        # assert batch.sgn == None
+        # batch.sgn, batch.sgn_mask, batch.sgn_lengths = self.visual_tokenize(
+        #     sgn_img=batch.sgn_img,
+        #     sgn_mask=batch.sgn_mask,
+        #     sgn_lengths=batch.sgn_lengths)
+        assert batch.sgn!=None, 'Please call forward before run_batch'
         outputs = self.signmodel.run_batch(
             batch=batch,
             **kwargs
@@ -719,7 +720,8 @@ def build_model(
 
         elif cfg["tokenizer"]["architecture"] in ['s3d','s3ds']:
             tokenizer = backbone_3D(cfg["tokenizer"]["pretrained_ckpt"],
-                              network=cfg["tokenizer"]["architecture"])
+                              network=cfg["tokenizer"]["architecture"],
+                              use_block=cfg["tokenizer"].get('use_block', 5))
             
             network = cfg["tokenizer"]["architecture"]
             pretask = pre_task[network]
@@ -736,7 +738,17 @@ def build_model(
                     tokenizer, ckpt_filename, success))
             else:
                 raise NotImplementedError
+            
+            #freeze!
+            freeze_block = cfg['tokenizer'].get('freeze_block', 0)
+            for i in range(1, freeze_block+1):
+                print('Freeze block{}'.format(i))
+                block_module = getattr(tokenizer.backbone, 'block{}'.format(i), None)
+                assert block_module, i
+                for param in block_module.parameters():
+                    param.requires_grad = False
         else:
+            
             raise ValueError
 
         tokenizer_signmodel = Tokenizer_SignModel(

@@ -214,6 +214,7 @@ class Batch_from_examples(Batch):
         frame_subsampling_ratio: int = None,
         random_frame_subsampling: bool = None,
         random_frame_masking_ratio: float = None,
+        transform_mode: str='train'
     ):
         # Sequence Information
         torch_batch = torchtext.data.Batch(data=example_list, dataset=dataset, device=None)
@@ -305,7 +306,7 @@ class Batch_from_examples(Batch):
             dataset_info['aug_hflip'] = False
             dataset_info['use_cache'] = False
             self.transform = get_data_transform(
-                mode='train' if is_train else 'test', 
+                mode=transform_mode if is_train else 'test', 
                 dataset_info=dataset_info)
             self.sgn = None
             self.sgn_lengths = []

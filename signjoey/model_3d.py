@@ -81,10 +81,11 @@ class S3Dt(S3Dtup):
         return feat
 
 
-def select_backbone(network, ckpt_dir=None, first_channel=3):
+def select_backbone(network, ckpt_dir=None, first_channel=3, use_block=5):
     param = {'feature_size': 1024}
     if network == 's3d':
-        model = S3D(input_channel=first_channel)
+        assert use_block<=5, use_block
+        model = S3D(input_channel=first_channel, use_block=use_block)
     elif network == 's3dt':
         init_path = os.path.join(ckpt_dir, 's3dt_milnce_ckpt', 's3d_dict.npy')
         model = S3Dt(init_path)
@@ -98,10 +99,10 @@ def select_backbone(network, ckpt_dir=None, first_channel=3):
     return model, param
 
 class backbone_3D(torch.nn.Module):
-    def __init__(self, ckpt_dir, network='i3d'):
+    def __init__(self, ckpt_dir, network='i3d', use_block=5):
         super(backbone_3D, self).__init__()
         self.network = network
-        self.backbone, self.param = select_backbone(network, ckpt_dir)
+        self.backbone, self.param = select_backbone(network, ckpt_dir, use_block=use_block)
     
     def forward(self, block):
         (B, C, T, H, W) = block.shape

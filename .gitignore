@@ -11,3 +11,10 @@ unused
 demo.py
 cnn_pretrainedmodels
 debug.py
+3d_pretrainedmodels/backbone_3d/i3d_glosscls_ckpt/FINAL_nslt_2000_iters=5104_top1=32.48_top5=57.31_top10=66.31.ini
+3d_pretrainedmodels/backbone_3d/i3d_glosscls_ckpt/FINAL_nslt_2000_iters=5104_top1=32.48_top5=57.31_top10=66.31.pt
+3d_pretrainedmodels/backbone_3d/i3d_glosscls_ckpt/retrain_nslt_2000_064314_0.341277.pt
+3d_pretrainedmodels/backbone_3d/s3d_coclr_ckpt/CoCLR-k400-rgb-128-s3d.pth.tar
+3d_pretrainedmodels/backbone_3d/s3dt_milnce_ckpt/s3d_howto100m.pth
+3d_pretrainedmodels/backbone_3d/s3dt_milnce_ckpt/s3d_dict.npy
+3d_pretrainedmodels/backbone_3d/s3ds_actioncls_ckpt/S3D_kinetics400.pt

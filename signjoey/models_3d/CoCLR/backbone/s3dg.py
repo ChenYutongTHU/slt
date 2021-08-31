@@ -134,67 +134,73 @@ class SepInception(nn.Module):
 
 class S3D(nn.Module):
 
-    def __init__(self, input_channel=3, gating=False, slow=False):
+    def __init__(self, input_channel=3, gating=False, slow=False, use_block=5):
         super(S3D, self).__init__()
         self.gating = gating 
         self.slow = slow 
+        self.use_block = use_block
 
-        if slow:
-            self.Conv_1a = STConv3d(input_channel, 64, kernel_size=7, stride=(1,2,2), padding=3)
-        else: # normal
-            self.Conv_1a = STConv3d(input_channel, 64, kernel_size=7, stride=2, padding=3) 
+        if use_block>=1:
+            if slow:
+                self.Conv_1a = STConv3d(input_channel, 64, kernel_size=7, stride=(1,2,2), padding=3)
+            else: # normal
+                self.Conv_1a = STConv3d(input_channel, 64, kernel_size=7, stride=2, padding=3) 
 
-        self.block1 = nn.Sequential(self.Conv_1a) # (64, 32, 112, 112)
+            self.block1 = nn.Sequential(self.Conv_1a) # (64, 32, 112, 112)
+        
+        if use_block>=2:
+            ###################################
+
+            self.MaxPool_2a = nn.MaxPool3d(kernel_size=(1,3,3), stride=(1,2,2), padding=(0,1,1)) 
+            self.Conv_2b = BasicConv3d(64, 64, kernel_size=1, stride=1) 
+            self.Conv_2c = STConv3d(64, 192, kernel_size=3, stride=1, padding=1) 
+
+            self.block2 = nn.Sequential(
+                self.MaxPool_2a, # (64, 32, 56, 56)
+                self.Conv_2b,    # (64, 32, 56, 56)
+                self.Conv_2c)    # (192, 32, 56, 56)
+
+        if use_block>=3:
+            ###################################
             
-        ###################################
+            self.MaxPool_3a = nn.MaxPool3d(kernel_size=(1,3,3), stride=(1,2,2), padding=(0,1,1)) 
+            self.Mixed_3b = SepInception(in_planes=192, out_planes=[64, 96, 128, 16, 32, 32], gating=gating)
+            self.Mixed_3c = SepInception(in_planes=256, out_planes=[128, 128, 192, 32, 96, 64], gating=gating)
 
-        self.MaxPool_2a = nn.MaxPool3d(kernel_size=(1,3,3), stride=(1,2,2), padding=(0,1,1)) 
-        self.Conv_2b = BasicConv3d(64, 64, kernel_size=1, stride=1) 
-        self.Conv_2c = STConv3d(64, 192, kernel_size=3, stride=1, padding=1) 
+            self.block3 = nn.Sequential(
+                self.MaxPool_3a,    # (192, 32, 28, 28)
+                self.Mixed_3b,      # (256, 32, 28, 28)
+                self.Mixed_3c)      # (480, 32, 28, 28)
 
-        self.block2 = nn.Sequential(
-            self.MaxPool_2a, # (64, 32, 56, 56)
-            self.Conv_2b,    # (64, 32, 56, 56)
-            self.Conv_2c)    # (192, 32, 56, 56)
+        if use_block>=4:
+            ###################################
+            
+            self.MaxPool_4a = nn.MaxPool3d(kernel_size=(3, 3, 3), stride=(2, 2, 2), padding=(1, 1, 1))
+            self.Mixed_4b = SepInception(in_planes=480, out_planes=[192, 96, 208, 16, 48, 64], gating=gating)
+            self.Mixed_4c = SepInception(in_planes=512, out_planes=[160, 112, 224, 24, 64, 64], gating=gating)
+            self.Mixed_4d = SepInception(in_planes=512, out_planes=[128, 128, 256, 24, 64, 64], gating=gating)
+            self.Mixed_4e = SepInception(in_planes=512, out_planes=[112, 144, 288, 32, 64, 64], gating=gating)
+            self.Mixed_4f = SepInception(in_planes=528, out_planes=[256, 160, 320, 32, 128, 128], gating=gating)
 
-        ###################################
-        
-        self.MaxPool_3a = nn.MaxPool3d(kernel_size=(1,3,3), stride=(1,2,2), padding=(0,1,1)) 
-        self.Mixed_3b = SepInception(in_planes=192, out_planes=[64, 96, 128, 16, 32, 32], gating=gating)
-        self.Mixed_3c = SepInception(in_planes=256, out_planes=[128, 128, 192, 32, 96, 64], gating=gating)
+            self.block4 = nn.Sequential(
+                self.MaxPool_4a,  # (480, 16, 14, 14)
+                self.Mixed_4b,    # (512, 16, 14, 14)
+                self.Mixed_4c,    # (512, 16, 14, 14)
+                self.Mixed_4d,    # (512, 16, 14, 14)
+                self.Mixed_4e,    # (528, 16, 14, 14)
+                self.Mixed_4f)    # (832, 16, 14, 14)
 
-        self.block3 = nn.Sequential(
-            self.MaxPool_3a,    # (192, 32, 28, 28)
-            self.Mixed_3b,      # (256, 32, 28, 28)
-            self.Mixed_3c)      # (480, 32, 28, 28)
+        if use_block>=5:
+            ###################################
+            
+            self.MaxPool_5a = nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2), padding=(0, 0, 0))
+            self.Mixed_5b = SepInception(in_planes=832, out_planes=[256, 160, 320, 32, 128, 128], gating=gating)
+            self.Mixed_5c = SepInception(in_planes=832, out_planes=[384, 192, 384, 48, 128, 128], gating=gating)
 
-        ###################################
-        
-        self.MaxPool_4a = nn.MaxPool3d(kernel_size=(3, 3, 3), stride=(2, 2, 2), padding=(1, 1, 1))
-        self.Mixed_4b = SepInception(in_planes=480, out_planes=[192, 96, 208, 16, 48, 64], gating=gating)
-        self.Mixed_4c = SepInception(in_planes=512, out_planes=[160, 112, 224, 24, 64, 64], gating=gating)
-        self.Mixed_4d = SepInception(in_planes=512, out_planes=[128, 128, 256, 24, 64, 64], gating=gating)
-        self.Mixed_4e = SepInception(in_planes=512, out_planes=[112, 144, 288, 32, 64, 64], gating=gating)
-        self.Mixed_4f = SepInception(in_planes=528, out_planes=[256, 160, 320, 32, 128, 128], gating=gating)
-
-        self.block4 = nn.Sequential(
-            self.MaxPool_4a,  # (480, 16, 14, 14)
-            self.Mixed_4b,    # (512, 16, 14, 14)
-            self.Mixed_4c,    # (512, 16, 14, 14)
-            self.Mixed_4d,    # (512, 16, 14, 14)
-            self.Mixed_4e,    # (528, 16, 14, 14)
-            self.Mixed_4f)    # (832, 16, 14, 14)
-
-        ###################################
-        
-        self.MaxPool_5a = nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2), padding=(0, 0, 0))
-        self.Mixed_5b = SepInception(in_planes=832, out_planes=[256, 160, 320, 32, 128, 128], gating=gating)
-        self.Mixed_5c = SepInception(in_planes=832, out_planes=[384, 192, 384, 48, 128, 128], gating=gating)
-
-        self.block5 = nn.Sequential(
-            self.MaxPool_5a,  # (832, 8, 7, 7)
-            self.Mixed_5b,    # (832, 8, 7, 7)
-            self.Mixed_5c)    # (1024, 8, 7, 7)
+            self.block5 = nn.Sequential(
+                self.MaxPool_5a,  # (832, 8, 7, 7)
+                self.Mixed_5b,    # (832, 8, 7, 7)
+                self.Mixed_5c)    # (1024, 8, 7, 7)
 
         ###################################
 
@@ -209,11 +215,10 @@ class S3D(nn.Module):
         
 
     def forward(self, x):
-        x = self.block1(x)
-        x = self.block2(x)
-        x = self.block3(x)
-        x = self.block4(x)
-        x = self.block5(x)
+        for i in range(1,self.use_block+1): #0,1,2,3,4,5
+            block_module = getattr(self, 'block{}'.format(i), None)
+            assert block_module, 'block{}'.format(i)
+            x = block_module(x)
         return x 
 
         

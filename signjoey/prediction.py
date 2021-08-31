@@ -185,6 +185,8 @@ def validate_on_data(
                 total_num_txt_tokens += batch.num_txt_tokens
             total_num_seqs += batch.num_seqs
 
+
+
             (
                 batch_gls_predictions,
                 batch_txt_predictions,
