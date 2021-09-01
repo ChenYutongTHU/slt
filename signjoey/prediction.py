@@ -159,24 +159,41 @@ def validate_on_data(
 
             batch._make_cuda()
             sort_reverse_index = batch.sort_by_sgn_lengths() 
+            with torch.cuda.amp.autocast():
+                batch_recognition_loss, batch_translation_loss = get_loss_for_batch(
+                    model=model,
+                    batch=batch,
+                    recognition_loss_function=recognition_loss_function
+                    if do_recognition
+                    else None,
+                    translation_loss_function=translation_loss_function
+                    if do_translation
+                    else None,
+                    recognition_loss_weight=recognition_loss_weight
+                    if do_recognition
+                    else None,
+                    translation_loss_weight=translation_loss_weight
+                    if do_translation
+                    else None,
+                    input_data=cfg['data'].get('input_data','feature')
+                )
 
-            batch_recognition_loss, batch_translation_loss = get_loss_for_batch(
-                model=model,
-                batch=batch,
-                recognition_loss_function=recognition_loss_function
-                if do_recognition
-                else None,
-                translation_loss_function=translation_loss_function
-                if do_translation
-                else None,
-                recognition_loss_weight=recognition_loss_weight
-                if do_recognition
-                else None,
-                translation_loss_weight=translation_loss_weight
-                if do_translation
-                else None,
-                input_data=cfg['data'].get('input_data','feature')
-            )
+                (
+                    batch_gls_predictions,
+                    batch_txt_predictions,
+                    batch_attention_scores,
+                ) = model.module.run_batch(
+                    batch=batch,
+                    recognition_beam_size=recognition_beam_size if do_recognition else None,
+                    translation_beam_size=translation_beam_size if do_translation else None,
+                    translation_beam_alpha=translation_beam_alpha
+                    if do_translation
+                    else None,
+                    translation_max_output_length=translation_max_output_length
+                    if do_translation
+                    else None,
+                )
+                
             if do_recognition:
                 total_recognition_loss += batch_recognition_loss
                 total_num_gls_tokens += batch.num_gls_tokens
@@ -184,25 +201,6 @@ def validate_on_data(
                 total_translation_loss += batch_translation_loss
                 total_num_txt_tokens += batch.num_txt_tokens
             total_num_seqs += batch.num_seqs
-
-
-
-            (
-                batch_gls_predictions,
-                batch_txt_predictions,
-                batch_attention_scores,
-            ) = model.module.run_batch(
-                batch=batch,
-                recognition_beam_size=recognition_beam_size if do_recognition else None,
-                translation_beam_size=translation_beam_size if do_translation else None,
-                translation_beam_alpha=translation_beam_alpha
-                if do_translation
-                else None,
-                translation_max_output_length=translation_max_output_length
-                if do_translation
-                else None,
-            )
-
             # sort outputs back to original order
             if do_recognition:
                 all_gls_outputs.extend(
