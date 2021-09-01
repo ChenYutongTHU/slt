@@ -58,6 +58,7 @@ class TrainManager:
         """
         train_config = config["training"]
         self.cfg = config
+        self.use_amp = config['training'].get('use_amp',False)
         self.train_config = config['training']
         self.input_data = config["data"].get("input_data", "feature")
         if self.input_data =='feature':
@@ -176,7 +177,8 @@ class TrainManager:
             optimizer=self.optimizer,
             hidden_size=config["model"]["encoder"]["hidden_size"],
         )
-
+        #amp scaler 
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
         # data & batch handling
         self.level = config["data"]["level"]
         if self.level not in ["word", "bpe", "char"]:
@@ -295,7 +297,8 @@ class TrainManager:
             "best_ckpt_iteration": self.best_ckpt_iteration,
             "model_state": self.model.module.state_dict(),
             "optimizer_state": self.optimizer.state_dict(),
-            "scheduler_state": self.scheduler.state_dict()
+            "scheduler_state": self.scheduler.state_dict(),
+            "scaler": self.scaler.state_dict()
             if self.scheduler is not None
             else None,
         }
@@ -378,6 +381,8 @@ class TrainManager:
         else:
             self.logger.info("Reset tracking of the best checkpoint.")
 
+        #load scaler
+        self.scaler.load_state_dict(model_checkpoint["scaler"])
         # # move parameters to cuda already in map_location
         # if self.use_cuda:
         #     self.model.cuda()
@@ -416,6 +421,7 @@ class TrainManager:
             distributed=distributed,
             shuffle=self.shuffle,
         )
+
         epoch_no = None
         for epoch_no in range(self.epochs):
             if distributed:
@@ -894,71 +900,75 @@ class TrainManager:
         :return normalized_recognition_loss: Normalized recognition loss
         :return normalized_translation_loss: Normalized translation loss
         """
-        recognition_loss, translation_loss = get_loss_for_batch(
-            model=self.model,
-            batch=batch,
-            recognition_loss_function=self.recognition_loss_function
-            if self.do_recognition
-            else None,
-            translation_loss_function=self.translation_loss_function
-            if self.do_translation
-            else None,
-            recognition_loss_weight=self.recognition_loss_weight
-            if self.do_recognition
-            else None,
-            translation_loss_weight=self.translation_loss_weight
-            if self.do_translation
-            else None,
-            input_data = self.input_data
-        )
 
-        # normalize translation loss
-        if self.do_translation:
-            if self.translation_normalization_mode == "batch":
-                txt_normalization_factor = batch.num_seqs
-            elif self.translation_normalization_mode == "tokens":
-                txt_normalization_factor = batch.num_txt_tokens
+        with torch.cuda.amp.autocast():
+            recognition_loss, translation_loss = get_loss_for_batch(
+                model=self.model,
+                batch=batch,
+                recognition_loss_function=self.recognition_loss_function
+                if self.do_recognition
+                else None,
+                translation_loss_function=self.translation_loss_function
+                if self.do_translation
+                else None,
+                recognition_loss_weight=self.recognition_loss_weight
+                if self.do_recognition
+                else None,
+                translation_loss_weight=self.translation_loss_weight
+                if self.do_translation
+                else None,
+                input_data = self.input_data
+            )
+
+            # normalize translation loss
+            if self.do_translation:
+                if self.translation_normalization_mode == "batch":
+                    txt_normalization_factor = batch.num_seqs
+                elif self.translation_normalization_mode == "tokens":
+                    txt_normalization_factor = batch.num_txt_tokens
+                else:
+                    raise NotImplementedError("Only normalize by 'batch' or 'tokens'")
+
+                # division needed since loss.backward sums the gradients until updated
+                normalized_translation_loss = translation_loss / (
+                    txt_normalization_factor * self.batch_multiplier
+                )
             else:
-                raise NotImplementedError("Only normalize by 'batch' or 'tokens'")
+                normalized_translation_loss = 0
 
-            # division needed since loss.backward sums the gradients until updated
-            normalized_translation_loss = translation_loss / (
-                txt_normalization_factor * self.batch_multiplier
-            )
-        else:
-            normalized_translation_loss = 0
+            # TODO (Cihan): Add Gloss Token normalization (?)
+            #   I think they are already being normalized by batch
+            #   I need to think about if I want to normalize them by token.
 
-        # TODO (Cihan): Add Gloss Token normalization (?)
-        #   I think they are already being normalized by batch
-        #   I need to think about if I want to normalize them by token.
+            # (Yutong):
+            # ctcloss_level: 
+            # sentence reduction='sum'  / num_sent (batch_size)*(batch_multiplier)
+            # token  reduction='mean' / (batch_multiplier)
+            if self.do_recognition:
+                if self.ctcloss_level=='sentence':
+                    gls_normalization_factor = batch.num_seqs
+                else: #'token'
+                    gls_normalization_factor = 1
+                normalized_recognition_loss = recognition_loss / (
+                    gls_normalization_factor * self.batch_multiplier
+                )
+            else:
+                normalized_recognition_loss = 0
 
-        # (Yutong):
-        # ctcloss_level: 
-        # sentence reduction='sum'  / num_sent (batch_size)*(batch_multiplier)
-        # token  reduction='mean' / (batch_multiplier)
-        if self.do_recognition:
-            if self.ctcloss_level=='sentence':
-                gls_normalization_factor = batch.num_seqs
-            else: #'token'
-                gls_normalization_factor = 1
-            normalized_recognition_loss = recognition_loss / (
-                gls_normalization_factor * self.batch_multiplier
-            )
-        else:
-            normalized_recognition_loss = 0
-
-        total_loss = normalized_recognition_loss + normalized_translation_loss
+            total_loss = normalized_recognition_loss + normalized_translation_loss
+        
         # compute gradients
-        total_loss.backward()
+        self.scaler.scale(total_loss).backward()
 
-
+        self.scaler.unscale_(self.optimizer)
         if self.clip_grad_fun is not None:
             # clip gradients (in-place)
             self.clip_grad_fun(params=self.model.module.parameters())
 
         if update:
 
-            self.optimizer.step()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
             self.optimizer.zero_grad()
             # increment step counter
             self.steps += 1

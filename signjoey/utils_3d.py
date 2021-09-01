@@ -236,7 +236,7 @@ def get_premodel_weight(network, pretask, model_without_dp, model_path):
             new_dict[k] = v
         state_dict = new_dict
         try: model_without_dp.load_state_dict(state_dict)
-        except: neq_load_customized(model_without_dp, state_dict, verbose=True)
+        except: neq_load_customized(model_without_dp, state_dict, verbose=False)
     elif network == 's3dt' and pretask == 'milnce':
         filename = glob.glob(os.path.join(model_path, '*.pth'))
         checkpoint = torch.load(filename[0], map_location='cpu')
