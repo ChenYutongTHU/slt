@@ -208,6 +208,7 @@ class TrainManager:
             )
         if distributed:
             local_rank = int(os.environ['LOCAL_RANK'])
+            self.model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(self.model)
             self.model = DDP(self.model, device_ids=[local_rank], output_device=local_rank)
 
 
@@ -1177,7 +1178,8 @@ def train(cfg_file: str) -> None:
             else cfg["data"]["feature_size"],
             do_recognition=do_recognition,
             do_translation=do_translation,
-            input_data=input_data
+            input_data=input_data,
+            tokenizer_mode=cfg['data'].get('transform_mode','train')
         )
 
     

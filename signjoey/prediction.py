@@ -419,6 +419,7 @@ def test(
         else cfg["data"]["feature_size"],
         do_recognition=do_recognition,
         do_translation=do_translation,
+        tokenizer_mode='eval'
     )
     model.load_state_dict(model_checkpoint["model_state"])
 

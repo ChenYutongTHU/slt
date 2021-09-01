@@ -471,7 +471,7 @@ class SignModel(nn.Module):
 
 
 class Tokenizer_SignModel(nn.Module):
-    def __init__(self, tokenizer_type, tokenizer, signmodel):
+    def __init__(self, tokenizer_type, tokenizer, signmodel, tokenizer_mode='train'):
         super().__init__()
         self.tokenizer_type = tokenizer_type
         self.tokenizer = tokenizer
@@ -484,13 +484,19 @@ class Tokenizer_SignModel(nn.Module):
         self.do_recognition = self.signmodel.do_recognition
         self.do_translation = self.signmodel.do_translation
 
+        self.tokenizer_mode = tokenizer_mode
     def visual_tokenize(
         self,
         sgn_img: Tensor,  # B,C,H,W
         sgn_mask: Tensor,
         sgn_lengths: Tensor,
     ) -> (Tensor):
+        if self.tokenizer_mode=='train':
+            self.tokenizer.train()
+        else:
+            self.tokenizer.eval()
         sgn_feature = self.tokenizer(sgn_img)
+        # self.tokenizer.eval()
         if self.tokenizer_type == 'cnn':
             #split and pad#
             assert torch.sum(
@@ -598,7 +604,8 @@ def build_model(
     txt_vocab: TextVocabulary,
     do_recognition: bool = True,
     do_translation: bool = True,
-    input_data: str='feature'
+    input_data: str='feature',
+    tokenizer_mode: str='train'
 ) -> SignModel:
     """
     Build and initialize the model according to the configuration.
@@ -754,5 +761,6 @@ def build_model(
         tokenizer_signmodel = Tokenizer_SignModel(
             tokenizer_type=cfg["tokenizer"]["architecture"],
             tokenizer=tokenizer,
-            signmodel=sign_model)
+            signmodel=sign_model,
+            tokenizer_mode=tokenizer_mode)
         return tokenizer_signmodel
