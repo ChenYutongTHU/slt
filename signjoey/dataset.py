@@ -28,6 +28,7 @@ class SignTranslationDataset(data.Dataset):
         input_data: str,
         path: str,
         fields: Tuple,
+        downsample: int=1,
         **kwargs
     ):
         """Create a SignTranslationDataset given paths and fields.
@@ -89,6 +90,12 @@ class SignTranslationDataset(data.Dataset):
                         assert 'num_frames' in s
                     if 'num_frames' in s:
                         samples[seq_id]['num_frames'] = s['num_frames']
+                #downsample
+                if input_data=='feature':
+                    samples[seq_id]['sign'] = samples[seq_id]['sign'][0::downsample,:] # L',d
+                    samples[seq_id]['num_frames'] = samples[seq_id]['sign'].shape[0]
+                #samples[seq_id]['num_frames']
+                #samples[seq_id]['sign'] 
 
         examples = []
         for s in samples:

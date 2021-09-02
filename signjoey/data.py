@@ -51,6 +51,7 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
 
     data_path = data_cfg.get("data_path", "./data")
     input_data = data_cfg.get("input_data", "feature")
+    downsample = data_cfg.get("downsample",1)
     if isinstance(data_cfg["train"], list):
         train_paths = [os.path.join(data_path, x) for x in data_cfg["train"]]
         dev_paths = [os.path.join(data_path, x) for x in data_cfg["dev"]]
@@ -126,7 +127,8 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
         path=train_paths,
         fields=(sequence_field, signer_field, sgn_field, gls_field, txt_field, num_frames_field),
         # filter_pred=lambda x: len(vars(x)["txt"]) <= max_sent_length
-        filter_pred=filter_pred
+        filter_pred=filter_pred,
+        downsample=downsample
     )
     # print(list(train_data.num_frames)[:10])
     # input()
@@ -166,6 +168,7 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
         path=dev_paths,
         fields=(sequence_field, signer_field, sgn_field,
                 gls_field, txt_field, num_frames_field),
+        downsample=downsample
     )
     random_dev_subset = data_cfg.get("random_dev_subset", -1)
     if random_dev_subset > -1:
@@ -182,6 +185,7 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
         path=test_paths,
         fields=(sequence_field, signer_field, sgn_field,
                 gls_field, txt_field, num_frames_field),
+        downsample=downsample
     )
 
     gls_field.vocab = gls_vocab
