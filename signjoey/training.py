@@ -585,6 +585,7 @@ class TrainManager:
                         if self.do_translation
                         else None,
                         frame_subsampling_ratio=self.frame_subsampling_ratio,
+                        use_amp=self.use_amp
                     )
                     self.model.train()
                     if distributed:
@@ -901,7 +902,7 @@ class TrainManager:
         :return normalized_translation_loss: Normalized translation loss
         """
 
-        with torch.cuda.amp.autocast():
+        with torch.cuda.amp.autocast(enabled=self.use_amp):
             recognition_loss, translation_loss = get_loss_for_batch(
                 model=self.model,
                 batch=batch,

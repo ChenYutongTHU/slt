@@ -56,6 +56,7 @@ def validate_on_data(
     batch_type: str = "sentence",
     dataset_version: str = "phoenix_2014_trans",
     frame_subsampling_ratio: int = None,
+    use_amp: bool=False,
 ) -> (
     float,
     float,
@@ -159,7 +160,7 @@ def validate_on_data(
 
             batch._make_cuda()
             sort_reverse_index = batch.sort_by_sgn_lengths() 
-            with torch.cuda.amp.autocast():
+            with torch.cuda.amp.autocast(enabled=use_amp):
                 batch_recognition_loss, batch_translation_loss = get_loss_for_batch(
                     model=model,
                     batch=batch,
