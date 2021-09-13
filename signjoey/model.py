@@ -71,7 +71,10 @@ def get_loss_for_batch(
             txt_input=batch.txt_input,
             txt_mask=batch.txt_mask,
         )
-
+        print(batch.sequence)
+        print(batch.sgn[0]) # B, L, D
+        print(batch.sgn[0].shape)
+        input()
     do_recognition = recognition_loss_function!=None
     do_translation = translation_loss_function!=None
 
