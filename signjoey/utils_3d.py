@@ -259,6 +259,15 @@ def get_premodel_weight(network, pretask, model_without_dp, model_path):
         state_dict = new_dict
         try: model_without_dp.load_state_dict(state_dict)
         except: neq_load_customized(model_without_dp, state_dict, verbose=True)
+    elif network == 's3ds' and pretask == 'glosscls':
+        filename = glob.glob(os.path.join(model_path, '*.pth.tar'))
+        checkpoint = torch.load(filename[0], map_location='cpu')
+        state_dict = checkpoint['state_dict']
+        try:
+            model_without_dp.load_state_dict(state_dict)
+        except:
+            neq_load_customized(model_without_dp, state_dict, verbose=True)
+        print('Succesful load s3ds_glosscls')
     elif network == 'i3d' and pretask == 'glosscls':
         #filename = glob.glob(os.path.join(model_path, '*.pt'))
         #checkpoint = torch.load(filename[0], map_location='cpu')

@@ -187,7 +187,8 @@ class InceptionI3d(nn.Module):
     )
 
     def __init__(self, num_classes=400, spatial_squeeze=True,
-                 final_endpoint='Logits', name='inception_i3d', in_channels=3, dropout_keep_prob=0.5):
+                 final_endpoint='Logits', name='inception_i3d', in_channels=3, dropout_keep_prob=0.5,
+                 stride=2):
         """Initializes I3D model instance.
         Args:
           num_classes: The number of outputs in the logit layer (default 400, which
@@ -205,8 +206,6 @@ class InceptionI3d(nn.Module):
           ValueError: if `final_endpoint` is not recognized.
         """
 
-        if final_endpoint not in self.VALID_ENDPOINTS:
-            raise ValueError('Unknown final endpoint %s' % final_endpoint)
 
         super(InceptionI3d, self).__init__()
         self._num_classes = num_classes
@@ -252,7 +251,7 @@ class InceptionI3d(nn.Module):
         if self._final_endpoint == end_point: return
 
         end_point = 'MaxPool3d_4a_3x3'
-        self.end_points[end_point] = MaxPool3dSamePadding(kernel_size=[3, 3, 3], stride=(2, 2, 2),
+        self.end_points[end_point] = MaxPool3dSamePadding(kernel_size=[3, 3, 3], stride=(stride, 2, 2),
                                                              padding=0)
         if self._final_endpoint == end_point: return
 
@@ -277,7 +276,7 @@ class InceptionI3d(nn.Module):
         if self._final_endpoint == end_point: return
 
         end_point = 'MaxPool3d_5a_2x2'
-        self.end_points[end_point] = MaxPool3dSamePadding(kernel_size=[2, 2, 2], stride=(2, 2, 2),
+        self.end_points[end_point] = MaxPool3dSamePadding(kernel_size=[2, 2, 2], stride=(stride, 2, 2),
                                                              padding=0)
         if self._final_endpoint == end_point: return
 
@@ -289,17 +288,17 @@ class InceptionI3d(nn.Module):
         self.end_points[end_point] = InceptionModule(256+320+128+128, [384,192,384,48,128,128], name+end_point)
         if self._final_endpoint == end_point: return
 
-        end_point = 'Logits'
-        self.avg_pool = nn.AvgPool3d(kernel_size=[2, 7, 7],
-                                     stride=(1, 1, 1))
-        self.dropout = nn.Dropout(dropout_keep_prob)
-        self.logits  = Unit3D(in_channels=384+384+128+128, output_channels=self._num_classes,
-                             kernel_shape=[1, 1, 1],
-                             padding=0,
-                             activation_fn=None,
-                             use_batch_norm=False,
-                             use_bias=True,
-                             name='logits')
+        # end_point = 'Logits'
+        # self.avg_pool = nn.AvgPool3d(kernel_size=[2, 7, 7],
+        #                              stride=(1, 1, 1))
+        # self.dropout = nn.Dropout(dropout_keep_prob)
+        # self.logits  = Unit3D(in_channels=384+384+128+128, output_channels=self._num_classes,
+        #                      kernel_shape=[1, 1, 1],
+        #                      padding=0,
+        #                      activation_fn=None,
+        #                      use_batch_norm=False,
+        #                      use_bias=True,
+        #                      name='logits')
 
         self.build()
 

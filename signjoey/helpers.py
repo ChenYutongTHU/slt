@@ -189,6 +189,21 @@ def load_config(path="configs/default.yaml") -> dict:
     """
     with open(path, "r", encoding="utf-8") as ymlfile:
         cfg = yaml.safe_load(ymlfile)
+    from model_3d import BLOCK2SIZE
+    if cfg['data'].get('input_data','feature') == 'image':
+        if cfg['model']['tokenizer']['architecture'] == 'cnn':
+            if cfg['data'].get('feature_size', 1024) != 2048:
+                cfg['data']['feature_size'] = 2048
+                print('tokenizer = CNN resnet, Rewrite feature_size to 2048')
+        else:
+            use_block=cfg['model']["tokenizer"].get('use_block', 5)
+            if cfg['data'].get('feature_size', 1024) != BLOCK2SIZE[use_block]:
+                cfg['data']['feature_size'] = BLOCK2SIZE[use_block]
+                print('tokenizer={}, use_block={} Rewrite feature_size to {}'.format(
+                    cfg['model']['tokenizer']['architecture'],
+                    use_block,
+                    BLOCK2SIZE[use_block]
+                ))
     return cfg
 
 

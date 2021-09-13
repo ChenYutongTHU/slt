@@ -81,6 +81,7 @@ class TrainManager:
         self.logger = make_logger(model_dir=self.model_dir, log_file='train.rank{}.log'.format(os.environ['RANK']))
         self.logging_freq = train_config.get("logging_freq", 100)
 
+        self.logger.info('Use_amp={}'.format(self.use_amp))
         if is_main_process():
             self.valid_report_file = "{}/validations.txt".format(self.model_dir)
             self.tb_writer = SummaryWriter(log_dir=self.model_dir + "/tensorboard/")
@@ -432,7 +433,7 @@ class TrainManager:
             if self.scheduler is not None and self.scheduler_step_at == "epoch":
                 self.scheduler.step(epoch=epoch_no)
 
-            self.model.train()
+            self.model.module.set_train()
             start = time.time()
             total_valid_duration = 0
             count = self.batch_multiplier - 1
@@ -587,7 +588,7 @@ class TrainManager:
                         frame_subsampling_ratio=self.frame_subsampling_ratio,
                         use_amp=self.use_amp
                     )
-                    self.model.train()
+                    self.model.module.set_train()
                     if distributed:
                         torch.distributed.barrier()
                         self.logger.info('rank{} barrier!'.format(os.environ['LOCAL_RANK']))
@@ -1189,8 +1190,7 @@ def train(cfg_file: str) -> None:
             else cfg["data"]["feature_size"],
             do_recognition=do_recognition,
             do_translation=do_translation,
-            input_data=input_data,
-            tokenizer_mode=cfg['data'].get('transform_mode','train')
+            input_data=input_data
         )
 
     
@@ -1210,7 +1210,7 @@ def train(cfg_file: str) -> None:
                                         for p in getattr(model, sub).parameters() if p.requires_grad)
             total_params = sum(p.numel() for p in getattr(model, sub).parameters())
             trainer.logger.info('# {} parameters = {}'.format(sub, total_params))
-            trainer.logger.info('# {} trainable parameters = {}'.format(sub, total_params_trainable))            
+            trainer.logger.info('# {} trainable parameters = {}'.format(sub, total_params_trainable))         
 
     # DDP
     if distributed:
@@ -1233,7 +1233,7 @@ def train(cfg_file: str) -> None:
         logging_function=trainer.logger.info,
     )
 
-    trainer.logger.info(str(model))
+    #trainer.logger.info(str(model))
 
 
     if is_main_process():

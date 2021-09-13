@@ -141,7 +141,7 @@ def validate_on_data(
     )
 
     # disable dropout
-    model.eval()
+    model.module.set_eval()
     # don't track gradients during validation
     with torch.no_grad():
         all_gls_outputs = []
@@ -409,17 +409,35 @@ def test(
     # build model and load parameters into it
     do_recognition = cfg["training"].get("recognition_loss_weight", 1.0) > 0.0
     do_translation = cfg["training"].get("translation_loss_weight", 1.0) > 0.0
-    model = build_model(
-        cfg=cfg["model"],
-        gls_vocab=gls_vocab,
-        txt_vocab=txt_vocab,
-        sgn_dim=sum(cfg["data"]["feature_size"])
-        if isinstance(cfg["data"]["feature_size"], list)
-        else cfg["data"]["feature_size"],
-        do_recognition=do_recognition,
-        do_translation=do_translation,
-        tokenizer_mode='eval'
-    )
+    input_data = config["data"].get("input_data", "feature")
+    if input_data == 'feature':
+        model = build_model(
+            cfg=cfg["model"],
+            gls_vocab=gls_vocab,
+            txt_vocab=txt_vocab,
+            sgn_dim=sum(cfg["data"]["feature_size"])
+            if isinstance(cfg["data"]["feature_size"], list)
+            else cfg["data"]["feature_size"],
+            do_recognition=do_recognition,
+            do_translation=do_translation,
+        )
+    elif input_data == 'image':
+        if cfg["model"]["tokenizer"]["architecture"] == 'cnn':
+            assert cfg["data"]["feature_size"] == 2048, 'feature_size={}? When input_data is img->cnn, only support resnet50 logits.'.format(
+                cfg["data"]["feature_size"])
+
+        model = build_model(
+            cfg=cfg["model"],
+            gls_vocab=gls_vocab,
+            txt_vocab=txt_vocab,
+            sgn_dim=sum(cfg["data"]["feature_size"])
+            if isinstance(cfg["data"]["feature_size"], list)
+            else cfg["data"]["feature_size"],
+            do_recognition=do_recognition,
+            do_translation=do_translation,
+            input_data=input_data
+        )
+
     model.load_state_dict(model_checkpoint["model_state"])
 
     if use_cuda:

@@ -3,27 +3,48 @@ from torch import nn
 import torch.nn.functional as F
 
 class S3Dsup(nn.Module):
-    def __init__(self, num_class):
+    def __init__(self, num_class, use_block, stride):
         super(S3Dsup, self).__init__()
-        self.base = nn.Sequential(
-            SepConv3d(3, 64, kernel_size=7, stride=2, padding=3),
-            nn.MaxPool3d(kernel_size=(1,3,3), stride=(1,2,2), padding=(0,1,1)),
-            BasicConv3d(64, 64, kernel_size=1, stride=1),
-            SepConv3d(64, 192, kernel_size=3, stride=1, padding=1),
-            nn.MaxPool3d(kernel_size=(1,3,3), stride=(1,2,2), padding=(0,1,1)),
-            Mixed_3b(),
-            Mixed_3c(),
-            nn.MaxPool3d(kernel_size=(3,3,3), stride=(2,2,2), padding=(1,1,1)),
-            Mixed_4b(),
-            Mixed_4c(),
-            Mixed_4d(),
-            Mixed_4e(),
-            Mixed_4f(),
-            nn.MaxPool3d(kernel_size=(2,2,2), stride=(2,2,2), padding=(0,0,0)),
-            Mixed_5b(),
-            Mixed_5c(),
-        )
-        self.fc = nn.Sequential(nn.Conv3d(1024, num_class, kernel_size=1, stride=1, bias=True),)
+        base_seq = []
+        if use_block>=1:
+            base_seq += [
+                SepConv3d(3, 64, kernel_size=7, stride=2, padding=3),
+            ]
+        if use_block>=2:
+            base_seq += [
+                nn.MaxPool3d(kernel_size=(1, 3, 3), stride=(
+                    1, 2, 2), padding=(0, 1, 1)),  # 1
+                BasicConv3d(64, 64, kernel_size=1, stride=1),  # 2
+                SepConv3d(64, 192, kernel_size=3, stride=1, padding=1),  # 3
+            ]
+        if use_block>=3:
+            base_seq += [
+                nn.MaxPool3d(kernel_size=(1, 3, 3), stride=(
+                    1, 2, 2), padding=(0, 1, 1)),  # 4
+                Mixed_3b(),  # 5
+                Mixed_3c(),  # 6
+            ]
+        if use_block>=4:
+            base_seq += [
+                nn.MaxPool3d(kernel_size=(3, 3, 3), stride=(
+                    stride, 2, 2), padding=(1, 1, 1)),  # 7
+                Mixed_4b(),  # 8
+                Mixed_4c(),  # 9
+                Mixed_4d(),  # 10
+                Mixed_4e(),  # 11
+                Mixed_4f(),  # 12
+            ]
+        if use_block>=5:
+            base_seq += [
+                nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(
+                    stride, 2, 2), padding=(0, 0, 0)),
+                Mixed_5b(),
+                Mixed_5c(), #15
+            ]
+        self.base_num_layers = len(base_seq)
+        self.base = nn.Sequential(*base_seq)
+
+
 
     def forward(self, x):
         y = self.base(x)

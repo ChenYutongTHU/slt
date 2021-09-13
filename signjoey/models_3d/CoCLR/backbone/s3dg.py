@@ -134,11 +134,12 @@ class SepInception(nn.Module):
 
 class S3D(nn.Module):
 
-    def __init__(self, input_channel=3, gating=False, slow=False, use_block=5):
+    def __init__(self, input_channel=3, gating=False, slow=False, use_block=5, freeze_block=0, stride=2):
         super(S3D, self).__init__()
         self.gating = gating 
         self.slow = slow 
         self.use_block = use_block
+        self.freeze_block = freeze_block
 
         if use_block>=1:
             if slow:
@@ -175,7 +176,7 @@ class S3D(nn.Module):
         if use_block>=4:
             ###################################
             
-            self.MaxPool_4a = nn.MaxPool3d(kernel_size=(3, 3, 3), stride=(2, 2, 2), padding=(1, 1, 1))
+            self.MaxPool_4a = nn.MaxPool3d(kernel_size=(3, 3, 3), stride=(stride, 2, 2), padding=(1, 1, 1))
             self.Mixed_4b = SepInception(in_planes=480, out_planes=[192, 96, 208, 16, 48, 64], gating=gating)
             self.Mixed_4c = SepInception(in_planes=512, out_planes=[160, 112, 224, 24, 64, 64], gating=gating)
             self.Mixed_4d = SepInception(in_planes=512, out_planes=[128, 128, 256, 24, 64, 64], gating=gating)
@@ -193,7 +194,7 @@ class S3D(nn.Module):
         if use_block>=5:
             ###################################
             
-            self.MaxPool_5a = nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2), padding=(0, 0, 0))
+            self.MaxPool_5a = nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(stride, 2, 2), padding=(0, 0, 0))
             self.Mixed_5b = SepInception(in_planes=832, out_planes=[256, 160, 320, 32, 128, 128], gating=gating)
             self.Mixed_5c = SepInception(in_planes=832, out_planes=[384, 192, 384, 48, 128, 128], gating=gating)
 
@@ -202,17 +203,13 @@ class S3D(nn.Module):
                 self.Mixed_5b,    # (832, 8, 7, 7)
                 self.Mixed_5c)    # (1024, 8, 7, 7)
 
-        ###################################
-
-        # self.AvgPool_0a = nn.AvgPool3d(kernel_size=(2, 7, 7), stride=1)
-        # self.Dropout_0b = nn.Dropout3d(dropout_keep_prob)
-        # self.Conv_0c = nn.Conv3d(1024, num_classes, kernel_size=1, stride=1, bias=True)
-
-        # self.classifier = nn.Sequential(
-        #     self.AvgPool_0a,
-        #     self.Dropout_0b,
-        #     self.Conv_0c)
-        
+        #freeze_block
+        self.frozen_modules = []
+        for i in range(1, self.freeze_block+1):
+            block_module = getattr(
+                self, 'block{}'.format(i), None)
+            assert block_module, i
+            self.frozen_modules.append(block_module)
 
     def forward(self, x):
         for i in range(1,self.use_block+1): #0,1,2,3,4,5

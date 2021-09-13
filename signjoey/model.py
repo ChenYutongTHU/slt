@@ -194,6 +194,12 @@ class SignModel(nn.Module):
         self.gloss_output_layer = gloss_output_layer
         self.do_recognition = do_recognition
         self.do_translation = do_translation
+    
+    def set_train(self):
+        self.train()
+    
+    def set_eval(self):
+        self.eval()
 
     # pylint: disable=arguments-differ
     def forward(
@@ -471,7 +477,7 @@ class SignModel(nn.Module):
 
 
 class Tokenizer_SignModel(nn.Module):
-    def __init__(self, tokenizer_type, tokenizer, signmodel, tokenizer_mode='train'):
+    def __init__(self, tokenizer_type, tokenizer, signmodel):
         super().__init__()
         self.tokenizer_type = tokenizer_type
         self.tokenizer = tokenizer
@@ -483,20 +489,21 @@ class Tokenizer_SignModel(nn.Module):
         self.txt_vocab = self.signmodel.txt_vocab
         self.do_recognition = self.signmodel.do_recognition
         self.do_translation = self.signmodel.do_translation
+    
+    def set_train(self):
+        self.tokenizer.set_train()
+        self.signmodel.train()
 
-        self.tokenizer_mode = tokenizer_mode
+    def set_eval(self):
+        self.eval()
+
     def visual_tokenize(
         self,
         sgn_img: Tensor,  # B,C,H,W
         sgn_mask: Tensor,
         sgn_lengths: Tensor,
     ) -> (Tensor):
-        if self.tokenizer_mode=='train':
-            self.tokenizer.train()
-        else:
-            self.tokenizer.eval()
         sgn_feature = self.tokenizer(sgn_img)
-        # self.tokenizer.eval()
         if self.tokenizer_type == 'cnn':
             #split and pad#
             assert torch.sum(
@@ -519,7 +526,7 @@ class Tokenizer_SignModel(nn.Module):
                 sgn.shape, sgn_mask.shape)
             assert sgn.shape[1] == sgn_mask.shape[2], (sgn.shape, sgn_mask.shape)
             return sgn, sgn_mask, sgn_lengths
-        elif self.tokenizer_type in ['s3d','s3ds']:
+        elif self.tokenizer_type in ['s3d','s3ds','i3d']:
             #Spatial average pooling and MASKING
             B, _, T_in, _, _ = sgn_img.shape
             B, _, T_out, _, _ = sgn_feature.shape
@@ -605,7 +612,6 @@ def build_model(
     do_recognition: bool = True,
     do_translation: bool = True,
     input_data: str='feature',
-    tokenizer_mode: str='train'
 ) -> SignModel:
     """
     Build and initialize the model according to the configuration.
@@ -725,13 +731,19 @@ def build_model(
             # cnn_signmodel = CNN_SignModel(
             #     cnn=cnn, signmodel=sign_model)  # already initialized
 
-        elif cfg["tokenizer"]["architecture"] in ['s3d','s3ds']:
-            tokenizer = backbone_3D(cfg["tokenizer"]["pretrained_ckpt"],
-                              network=cfg["tokenizer"]["architecture"],
-                              use_block=cfg["tokenizer"].get('use_block', 5))
+        elif cfg["tokenizer"]["architecture"] in ['s3d','s3ds','i3d']:
+            tokenizer = backbone_3D(
+                    network=cfg["tokenizer"]["architecture"], 
+                    ckpt_dir=cfg["tokenizer"]["pretrained_ckpt"],
+                    use_block=cfg["tokenizer"].get('use_block', 5),
+                    freeze_block=cfg['tokenizer'].get('freeze_block', 0),
+                    stride=cfg['tokenizer'].get('block45_stride', 2))
             
             network = cfg["tokenizer"]["architecture"]
-            pretask = pre_task[network]
+            if cfg["tokenizer"].get('pretask','default')=='default':
+                pretask = pre_task[network]
+            else:
+                pretask = cfg["tokenizer"].get('pretask','default')
             ckpt_filename = os.path.join(
                 cfg["tokenizer"]["pretrained_ckpt"], 
                 '%s_%s_ckpt' % (network, pretask))
@@ -742,18 +754,10 @@ def build_model(
                 model_path=ckpt_filename)
             if success:
                 print('Load model {} from {} ... success {}'.format(
-                    tokenizer, ckpt_filename, success))
+                    network, ckpt_filename, success))
             else:
                 raise NotImplementedError
             
-            #freeze!
-            freeze_block = cfg['tokenizer'].get('freeze_block', 0)
-            for i in range(1, freeze_block+1):
-                print('Freeze block{}'.format(i))
-                block_module = getattr(tokenizer.backbone, 'block{}'.format(i), None)
-                assert block_module, i
-                for param in block_module.parameters():
-                    param.requires_grad = False
         else:
             
             raise ValueError
@@ -761,6 +765,5 @@ def build_model(
         tokenizer_signmodel = Tokenizer_SignModel(
             tokenizer_type=cfg["tokenizer"]["architecture"],
             tokenizer=tokenizer,
-            signmodel=sign_model,
-            tokenizer_mode=tokenizer_mode)
+            signmodel=sign_model)
         return tokenizer_signmodel
