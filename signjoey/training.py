@@ -408,6 +408,7 @@ class TrainManager:
                     img_transform=self.cfg['model']['cnn']['type']
                     if self.tokenizer_type=='cnn'
                     else None,
+                    downsample=self.cfg['data'].get('downsample', 1),
                     tokenizer_type=self.tokenizer_type,
                     max_num_frames=self.cfg['data']['max_sent_length'],
                     split='train',
@@ -1177,9 +1178,6 @@ def train(cfg_file: str) -> None:
             do_translation=do_translation,
         )
     elif input_data == 'image':
-        if cfg["model"]["tokenizer"]["architecture"] == 'cnn':
-            assert cfg["data"]["feature_size"] == 2048, 'feature_size={}? When input_data is img->cnn, only support resnet50 logits.'.format(
-                cfg["data"]["feature_size"])
 
         model = build_model(
             cfg=cfg["model"],

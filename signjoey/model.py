@@ -28,7 +28,8 @@ from signjoey.batch import Batch
 from signjoey.helpers import freeze_params
 from torch import Tensor
 from typing import Union
-
+from signjoey.resnet import Resnet50
+from signjoey.models_3d.CoCLR.utils.utils import neq_load_customized
 
 def get_loss_for_batch(
     model,
@@ -71,10 +72,7 @@ def get_loss_for_batch(
             txt_input=batch.txt_input,
             txt_mask=batch.txt_mask,
         )
-        print(batch.sequence)
-        print(batch.sgn[0]) # B, L, D
-        print(batch.sgn[0].shape)
-        input()
+
     do_recognition = recognition_loss_function!=None
     do_translation = translation_loss_function!=None
 
@@ -109,44 +107,46 @@ def get_loss_for_batch(
 
 
 class CNN(torch.nn.Module):
-    def __init__(self, pretrained_ckpt, freeze_resnet_layer=0):
+    def __init__(self, pretrained_ckpt, use_layer=4, freeze_layer=0):
         super().__init__()
-        self.freeze_resnet_layer = int(freeze_resnet_layer)
-        self.resnet = torchvision.models.resnet50(pretrained=False)
-        self.resnet.fc = None
+        self.use_layer = int(use_layer)
+        self.freeze_layer = int(freeze_layer)
+        assert self.freeze_layer<=self.use_layer, (self.freeze_layer, self.use_layer)
+        self.resnet = Resnet50(use_layer=use_layer)
         if os.path.isfile(pretrained_ckpt):
             print('CNN trained from {}'.format(pretrained_ckpt))
-            self.resnet.load_state_dict(
-                torch.load(pretrained_ckpt), strict=False)
+            try:
+                self.resnet.load_state_dict(
+                    torch.load(pretrained_ckpt), strict=False)
+            except:
+                neq_load_customized(model=self.resnet, 
+                    pretrained_dict=torch.load(pretrained_ckpt), verbose=True)
         else:
             print('CNN from scratch, pretrained_ckpt {} is not a file'.format(
                 pretrained_ckpt))
         
-        #freeze resnet_layer
-        if self.freeze_resnet_layer:
-            freeze_modules = [self.resnet.conv1, self.resnet.bn1, self.resnet.relu, self.resnet.maxpool]
-            for li in range(1, self.freeze_resnet_layer+1):
-                freeze_modules.append(getattr(self.resnet, 'layer{}'.format(li)))
+        self.frozen_modules = []
+        if self.freeze_layer>0:
+            self.frozen_modules = [self.resnet.conv1, self.resnet.bn1, self.resnet.relu, self.resnet.maxpool]
+            for li in range(1, self.freeze_layer+1):
+                self.frozen_modules.append(getattr(self.resnet, 'layer{}'.format(li)))
             
-            for m in freeze_modules:
-                for param in m.parameters():
-                    param.requires_grad = False
+        self.set_frozen_layers()
+
+    def set_train(self):
+        self.train()
+        for m in self.frozen_modules:
+            m.eval()
+
+    def set_frozen_layers(self):
+        for m in self.frozen_modules:
+            for param in m.parameters():
+                #print(param)
+                param.requires_grad = False
+            m.eval()
 
     def forward(self, x):
-        x = self.resnet.conv1(x)
-        x = self.resnet.bn1(x)
-        x = self.resnet.relu(x)
-        x = self.resnet.maxpool(x)
-
-        x = self.resnet.layer1(x)
-        x = self.resnet.layer2(x)
-        x = self.resnet.layer3(x)
-        x = self.resnet.layer4(x)
-
-        x = self.resnet.avgpool(x)  # return logits
-        #x = torch.flatten(x, 1)
-        #x = self.fc(x)
-
+        x = self.resnet(x)
         return x.squeeze(dim=-1).squeeze(dim=-1)
 
 
@@ -730,9 +730,9 @@ def build_model(
     else:
         if cfg["tokenizer"]["architecture"] == 'cnn':
             tokenizer = CNN(pretrained_ckpt=cfg["cnn"].get('pretrained_ckpt', None), 
-                        freeze_resnet_layer=cfg["cnn"].get('freeze_resnet_layer',0))
-            # cnn_signmodel = CNN_SignModel(
-            #     cnn=cnn, signmodel=sign_model)  # already initialized
+                        use_layer=cfg["cnn"].get('use_layer',4),
+                        freeze_layer=cfg["cnn"].get("freeze_layer",0))
+
 
         elif cfg["tokenizer"]["architecture"] in ['s3d','s3ds','i3d']:
             tokenizer = backbone_3D(

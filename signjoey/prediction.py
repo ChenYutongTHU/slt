@@ -129,6 +129,7 @@ def validate_on_data(
             if tokenizer_type=='cnn'
             else None,
             tokenizer_type=tokenizer_type,
+            downsample = cfg['data'].get('downsample', 1),
             max_num_frames=cfg['data']['max_sent_length'],
             split=split,
             use_cuda=use_cuda,
@@ -409,7 +410,7 @@ def test(
     # build model and load parameters into it
     do_recognition = cfg["training"].get("recognition_loss_weight", 1.0) > 0.0
     do_translation = cfg["training"].get("translation_loss_weight", 1.0) > 0.0
-    input_data = config["data"].get("input_data", "feature")
+    input_data = cfg["data"].get("input_data", "feature")
     if input_data == 'feature':
         model = build_model(
             cfg=cfg["model"],

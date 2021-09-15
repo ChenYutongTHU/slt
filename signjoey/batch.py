@@ -207,6 +207,7 @@ class Batch_from_examples(Batch):
         img_path: str = None,
         img_transform: str = None,
         tokenizer_type: str = None, #s3dt ..
+        downsample: int=1, 
         max_num_frames: int=400,
         split: str = None,
         is_train: bool = False,
@@ -223,6 +224,7 @@ class Batch_from_examples(Batch):
         self.input_data = input_data
         self.max_num_frames = max_num_frames
         self.tokenizer_type = tokenizer_type
+        self.downsample = downsample
         if input_data == 'feature':
             self.sgn, self.sgn_lengths = torch_batch.sgn
             # Here be dragons
@@ -281,6 +283,8 @@ class Batch_from_examples(Batch):
                 seq_folder = os.path.join(img_path, name)
                 assert os.path.isdir(seq_folder), seq_folder
                 image_path_list = [ss for ss in sorted(os.listdir(seq_folder)) if ss[-4:]=='.png']
+                if self.downsample>1:
+                    image_path_list = image_path_list[::self.downsample]
                 self.sgn_lengths.append(len(image_path_list))  # l0,l1,l2,l3,l4
                 for p in image_path_list:
                     p_ = os.path.join(seq_folder, p)
@@ -299,6 +303,7 @@ class Batch_from_examples(Batch):
             self.sgn_mask = torch.tensor(self.sgn_mask, dtype=torch.bool).unsqueeze(1)
             self.sgn_img = torch.stack(self.sgn_img, dim=0) #(l1+l2+l3+..l4), C,H,W
         else:
+            assert downsample==1, (downsample)
             # 3d preprocess, adapted from Menghan's code
             dataset_info = dict()
             dataset_info['model'], dataset_info['pretask'] = tokenizer_type, pre_task[tokenizer_type]
