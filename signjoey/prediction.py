@@ -814,7 +814,6 @@ def test(
         with open(output_path + ".test_results.pkl", "wb") as out:
             pickle.dump(test_best_result, out)
 
-    test(cfg_file, ckpt=ckpt, output_path=output_path, logger=logger)
 
 
 if __name__ == "__main__":
