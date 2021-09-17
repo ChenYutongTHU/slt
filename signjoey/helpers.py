@@ -212,6 +212,16 @@ def load_config(path="configs/default.yaml") -> dict:
                     use_block,
                     BLOCK2SIZE[use_block]
                 ))
+    else:
+        name = cfg['data']['train']
+        ind = name.find('block')
+        if ind!=-1:
+            use_block = int(name[ind+5])
+            cfg['data']['feature_size'] = BLOCK2SIZE[use_block]
+            print('use_block={} Rewrite feature_size to {}'.format(
+                use_block,
+                BLOCK2SIZE[use_block]
+            ))
     return cfg
 
 
