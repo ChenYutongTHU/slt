@@ -6,6 +6,8 @@ import copy
 import glob
 import os, math
 import os.path
+import sys
+sys.path.append(os.getcwd())#slt dir
 import errno
 import shutil
 import random

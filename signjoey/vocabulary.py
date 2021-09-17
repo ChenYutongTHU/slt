@@ -215,6 +215,7 @@ def build_vocab(
             vocab = TextVocabulary(file=vocab_file)
         else:
             raise ValueError("Unknown vocabulary type")
+        sorted_counter = None
     else:
         tokens = []
         for i in dataset.examples:

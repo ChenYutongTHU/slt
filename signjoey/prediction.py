@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import argparse
 from helpers import get_distributed_sampler_index
 import os
 import torch
@@ -14,12 +15,15 @@ import torch.nn as nn
 
 from typing import List
 from torchtext.data import Dataset
+import sys
+sys.path.append(os.getcwd())#slt dir
 from signjoey.loss import XentLoss
 from signjoey.helpers import (
     bpe_postprocess,
     load_config,
     get_latest_checkpoint,
     load_checkpoint,
+    make_logger
 )
 from signjoey.metrics import bleu, chrf, rouge, wer_list
 from signjoey.model import build_model, SignModel, get_loss_for_batch
@@ -440,7 +444,7 @@ def test(
         )
 
     model.load_state_dict(model_checkpoint["model_state"])
-
+    logger.info('Load Model state dict from {}'.format(ckpt))
     if use_cuda:
         model.cuda()
         assert 'LOCAL_RANK' in os.environ, 'Only support distributed training'
@@ -510,7 +514,7 @@ def test(
                 txt_pad_index=txt_vocab.stoi[PAD_TOKEN],
                 # Recognition Parameters
                 do_recognition=do_recognition,
-                recognition_loss_function=recognition_loss_function,
+                recognition_loss_function=recognition_loss_function if do_recognition else None,
                 recognition_loss_weight=1,
                 recognition_beam_size=rbw,
                 # Translation Parameters
@@ -526,6 +530,7 @@ def test(
                 translation_beam_size=1 if do_translation else None,
                 translation_beam_alpha=-1 if do_translation else None,
                 frame_subsampling_ratio=frame_subsampling_ratio,
+                use_amp = cfg["training"].get('use_amp',False)
             )
             logger.info("finished in %.4fs ", time.time() - valid_start_time)
             if dev_recognition_results[rbw]["valid_scores"]["wer"] < dev_best_wer_score:
@@ -808,3 +813,31 @@ def test(
             )
         with open(output_path + ".test_results.pkl", "wb") as out:
             pickle.dump(test_best_result, out)
+
+    test(cfg_file, ckpt=ckpt, output_path=output_path, logger=logger)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser("Joey-NMT")
+    parser.add_argument(
+        "--config",
+        default="configs/default.yaml",
+        type=str,
+        help="Training configuration file (yaml).",
+    )
+    args = parser.parse_args()
+    assert 'LOCAL_RANK' in os.environ, 'Only support distributed training/evaluation(gpu=1) now!'
+    cfg = load_config(args.config)
+    train_config = cfg["training"]
+    model_dir = train_config["model_dir"]
+    ckpt = "{}/{}.ckpt".format(model_dir, 'best')
+    output_name = "best.IT_best"
+    output_path = os.path.join(model_dir, output_name)
+    logger = make_logger(model_dir=model_dir, log_file='test.rank{}.log'.format(os.environ['RANK']))
+
+    distributed = 'WORLD_SIZE' in os.environ
+    if distributed:
+        local_rank = int(os.environ['LOCAL_RANK'])
+        torch.cuda.set_device(local_rank)
+        torch.distributed.init_process_group(backend="nccl", init_method="env://")
+    test(cfg_file=args.config, ckpt=ckpt, output_path=output_path, logger=logger)

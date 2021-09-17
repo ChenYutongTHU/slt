@@ -127,7 +127,7 @@ class S3Dt(S3Dtup):
 
 def select_backbone(network, ckpt_dir=None, first_channel=3, use_block=5, freeze_block=0, stride=2):
     param = {'feature_size': BLOCK2SIZE[use_block]}
-    assert network in ['s3ds'], 'i3d s3d haven\'t been debug'
+    #assert network in ['s3ds'], 'i3d s3d haven\'t been debug'
     assert (use_block<=5 and freeze_block<=use_block), (use_block, freeze_block)
     if network == 's3d':
         assert use_block<=5, use_block
