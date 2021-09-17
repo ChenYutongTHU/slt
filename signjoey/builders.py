@@ -9,6 +9,7 @@ from torch import nn
 
 # Learning Rate Scheduler
 from torch.optim import lr_scheduler
+from torch.optim.lr_scheduler import _LRScheduler
 
 # Optimization Algorithms
 from torch.optim import Optimizer
@@ -347,3 +348,17 @@ class WarmupExponentialDecayScheduler:
     # pylint: disable=no-self-use
     def state_dict(self):
         return None
+
+class WarmupScheduler(_LRScheduler):
+    def __init__(self, optimizer, total_epochs, last_epoch=-1):
+        self.total_epochs = total_epochs
+        super().__init__(optimizer, last_epoch)
+    def get_lr(self):
+        #do not start from zero
+        if self.last_epoch<=0:
+            return [base_lr*1/(self.total_epochs+1e-8) for base_lr in self.base_lrs]
+        else:
+            return [base_lr*self.last_epoch/(self.total_epochs+1e-8) for base_lr in self.base_lrs]
+    
+    def finish(self):
+        return self.last_epoch>=self.total_epochs

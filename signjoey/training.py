@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 from typing import List, Dict
 import os
+from typing_extensions import ParamSpec
 os.environ['MKL_THREADING_LAYER'] = 'GNU'
 import warnings
 from google.protobuf.reflection import ParseMessage
@@ -35,7 +36,7 @@ from signjoey.model import SignModel, get_loss_for_batch
 from signjoey.prediction import validate_on_data
 from signjoey.loss import XentLoss
 from signjoey.data import load_data, make_data_iter
-from signjoey.builders import build_optimizer, build_scheduler, build_gradient_clipper
+from signjoey.builders import build_optimizer, build_scheduler, build_gradient_clipper, WarmupScheduler
 from signjoey.prediction import test
 from signjoey.metrics import wer_single
 from signjoey.vocabulary import SIL_TOKEN
@@ -116,12 +117,21 @@ class TrainManager:
 
         # optimization
         self.last_best_lr = train_config.get("learning_rate", -1)
-        self.learning_rate_min = train_config.get("learning_rate_min", 1.0e-8)
+        self.learning_rate_min = train_config.get("learning_rate_min", -1)
         self.lr_decay_cnt = 0
         self.lr_decay_max_cnt = train_config.get("lr_decay_max_cnt", 3)
         self.clip_grad_fun = build_gradient_clipper(config=train_config)
+        if self.input_data=='image':
+            slt_lr = train_config.get("learning_rate", 3.0e-4)
+            tok_lr = slt_lr*train_config.get("learning_rate_ratio", 1)
+            parameters=[
+                {'params':model.signmodel.parameters(), 'lr':slt_lr},
+                {'params':model.tokenizer.parameters(), 'lr':tok_lr},
+            ]
+        else:
+            parameters = model.parameters()
         self.optimizer = build_optimizer(
-            config=train_config, parameters=model.parameters()
+            config=train_config, parameters=parameters
         )
         self.batch_multiplier = train_config.get("batch_multiplier", 1)
 
@@ -171,6 +181,16 @@ class TrainManager:
             "random_frame_masking_ratio", None
         )
 
+        self.warmup = self.train_config.get("warmup", 0)
+        if self.warmup>0:
+            #only support warmupscheduler.step() at epoch
+            self.warmup_scheduler = WarmupScheduler(
+                optimizer=self.optimizer,
+                total_epochs=self.warmup,
+                last_epoch=-1
+            )
+        else:
+            self.warmup_scheduler = None
         # learning rate scheduling
         self.scheduler, self.scheduler_step_at = build_scheduler(
             config=train_config,
@@ -303,6 +323,8 @@ class TrainManager:
             if self.scheduler is not None
             else None,
         }
+        if self.warmup_scheduler:
+            state['warmup_scheduler_state'] = self.warmup_scheduler.state_dict()
         torch.save(state, model_path)
         if self.ckpt_queue.full():
             to_delete = self.ckpt_queue.get()  # delete oldest ckpt
@@ -367,6 +389,9 @@ class TrainManager:
                 and self.scheduler is not None
             ):
                 self.scheduler.load_state_dict(model_checkpoint["scheduler_state"])
+                if self.warmup_scheduler:
+                    assert "warmup_scheduler_state" in model_checkpoint
+                    self.warmup_scheduler.load_state_dict(model_checkpoint["warmup_scheduler_state"])
         else:
             self.logger.info("Reset scheduler.")
 
@@ -430,9 +455,11 @@ class TrainManager:
                 train_sampler.set_epoch(epoch_no)
                 
             self.logger.info("EPOCH %d", epoch_no + 1)
-
-            if self.scheduler is not None and self.scheduler_step_at == "epoch":
-                self.scheduler.step(epoch=epoch_no)
+            
+            if self.warmup_scheduler is not None and self.warmup_scheduler.finish()==False:
+                self.warmup_scheduler.step()
+            elif self.scheduler is not None and self.scheduler_step_at == "epoch":
+                self.scheduler.step()#(epoch=epoch_no)
 
             self.model.module.set_train()
             start = time.time()
@@ -504,6 +531,10 @@ class TrainManager:
                 if self.steps % self.logging_freq == 0 and update:
                     elapsed = time.time() - start - total_valid_duration
 
+                    for i, param_group in enumerate(self.optimizer.param_groups):
+                        current_lr = param_group["lr"]
+                        self.tb_writer.add_scalar("train/learning_rate_"+str(i), current_lr,  self.steps)
+
                     log_out = "[Epoch: {:03d} Step: {:08d}] ".format(
                         epoch_no + 1, self.steps,
                     )
@@ -530,7 +561,11 @@ class TrainManager:
                         log_out += "Txt Tokens per Sec: {:8.0f} || ".format(
                             elapsed_txt_tokens / elapsed
                         )
-                    log_out += "Lr: {:.6f}".format(self.optimizer.param_groups[0]["lr"])
+                    if self.input_data=='feature':
+                        log_out += "Lr: {:.6f}".format(self.optimizer.param_groups[0]["lr"])
+                    else:
+                        log_out += "signmodel Lr: {:.6f} ".format(self.optimizer.param_groups[0]["lr"])
+                        log_out += "tokenizer Lr: {:.6f}".format(self.optimizer.param_groups[1]["lr"])
                     self.logger.info(log_out)
                     start = time.time()
                     total_valid_duration = 0
@@ -712,8 +747,7 @@ class TrainManager:
                         self.last_best_lr = current_lr
                     if current_lr < self.learning_rate_min:
                         self.stop = True
-
-                    self.tb_writer.add_scalar("train/learning_rate", current_lr,  self.steps)
+               
                     
                     if distributed and is_main_process():
                         self.logger.info('broadcast from 0 to others: new_best={}'.format(new_best))
