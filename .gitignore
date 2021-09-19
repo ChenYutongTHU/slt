@@ -19,3 +19,6 @@ debug.py
 3d_pretrainedmodels/backbone_3d/s3dt_milnce_ckpt/s3d_dict.npy
 3d_pretrainedmodels/backbone_3d/s3ds_actioncls_ckpt/S3D_kinetics400.pt
 base_annotations/phoenix14t.debug
+update_configs_scripts.sh
+3d_pretrainedmodels/backbone_3d/s3ds_glosscls_ckpt/epoch299.pth.tar
+signjoey/prediction_debug.py

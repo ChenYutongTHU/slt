@@ -441,7 +441,8 @@ class TrainManager:
                     frame_subsampling_ratio=self.frame_subsampling_ratio,
                     random_frame_subsampling=self.random_frame_subsampling,
                     random_frame_masking_ratio=self.random_frame_masking_ratio,
-                    transform_mode=self.cfg['data'].get('transform_mode','train')
+                    transform_mode=self.cfg['data'].get('transform_mode','train'),
+                    data_cfg = self.cfg["data"]
                 ),
             batch_size=self.batch_size,
             batch_type=self.batch_type,

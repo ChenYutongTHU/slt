@@ -215,7 +215,8 @@ class Batch_from_examples(Batch):
         frame_subsampling_ratio: int = None,
         random_frame_subsampling: bool = None,
         random_frame_masking_ratio: float = None,
-        transform_mode: str='train'
+        transform_mode: str='train',
+        data_cfg: dict=None
     ):
         # Sequence Information
         torch_batch = torchtext.data.Batch(data=example_list, dataset=dataset, device=None)
@@ -310,6 +311,7 @@ class Batch_from_examples(Batch):
             dataset_info['img_size'] = 224
             dataset_info['aug_hflip'] = False
             dataset_info['use_cache'] = False
+            dataset_info['color_jitter'] = data_cfg.get('color_jitter',True)
             self.transform = get_data_transform(
                 mode=transform_mode if is_train else 'test', 
                 dataset_info=dataset_info)

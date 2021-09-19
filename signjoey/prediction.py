@@ -138,6 +138,7 @@ def validate_on_data(
             split=split,
             use_cuda=use_cuda,
             frame_subsampling_ratio=frame_subsampling_ratio,
+            data_cfg=cfg['data']
         ),
         batch_size=batch_size,
         batch_type=batch_type,

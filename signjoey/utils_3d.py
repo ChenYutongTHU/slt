@@ -45,7 +45,8 @@ def get_data_transform(mode, dataset_info):
         if dataset_info['aug_hflip']:
             ops.append(A.RandomHorizontalFlip())
         ops.append(A.Scale(dataset_info['img_size']))
-        ops.append(A.ColorJitter(0.4, 0.4, 0.4, 0.1, p=0.3, consistent=True))
+        if dataset_info['color_jitter']:
+            ops.append(A.ColorJitter(0.4, 0.4, 0.4, 0.1, p=0.3, consistent=True))
     elif mode == 'val' or mode == 'test':
         ops = [A.CenterCrop(size=224, consistent=True), A.Scale(dataset_info['img_size']),]
     else:
