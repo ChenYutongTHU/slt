@@ -44,7 +44,8 @@ from torch import Tensor
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from torchtext.data import Dataset
-
+import _init_paths
+from utils.utils import neq_load_customized
 # pylint: disable=too-many-instance-attributes
 class TrainManager:
     """ Manages training loop, validations, learning rate scheduling
@@ -373,10 +374,14 @@ class TrainManager:
                 map_location = 'cuda:{}'.format(os.environ['LOCAL_RANK'])
             else:
                 map_location = 'cuda'
+        
         model_checkpoint = load_checkpoint(path=path, map_location=map_location)
 
         # restore model and optimizer parameters
-        self.model.load_state_dict(model_checkpoint["model_state"])
+        try:
+            self.model.load_state_dict(model_checkpoint["model_state"])
+        except:
+            neq_load_customized(self.model, model_checkpoint["model_state"], verbose=True)
 
         if not reset_optimizer:
             self.optimizer.load_state_dict(model_checkpoint["optimizer_state"])

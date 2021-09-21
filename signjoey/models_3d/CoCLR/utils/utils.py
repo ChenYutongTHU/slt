@@ -92,13 +92,13 @@ def neq_load_customized(model, pretrained_dict, verbose=True):
     tmp = {}
     if verbose:
         print('\n=======Check Weights Loading======')
-        # print('Weights not used from pretrained file:')
-        # for k, v in pretrained_dict.items():
-        #     if k in model_dict:
-        #         tmp[k] = v
-        #     else:
-        #         print(k)
-        # print('---------------------------')
+        print('Weights not used from pretrained file:')
+        for k, v in pretrained_dict.items():
+            if k in model_dict:
+                tmp[k] = v
+            else:
+                print(k)
+        print('---------------------------')
         print('Weights not loaded into new model:')
         for k, v in model_dict.items():
             if k not in pretrained_dict:

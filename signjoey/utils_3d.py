@@ -260,7 +260,21 @@ def get_premodel_weight(network, pretask, model_without_dp, model_path):
         state_dict = new_dict
         try: model_without_dp.load_state_dict(state_dict)
         except: neq_load_customized(model_without_dp, state_dict, verbose=True)
-    elif network == 's3ds' and pretask == 'glosscls':
+    elif network == 's3ds' and pretask in ['phoenix', 'k400_phoenix']:
+        filename = glob.glob(os.path.join(model_path, '*.ckpt'))
+        checkpoint = torch.load(filename[0], map_location='cpu')
+        state_dict = checkpoint['model_state']
+        new_dict = {}
+        for k, v in state_dict.items():
+            if 'tokenizer' in k:
+                k = k.replace('tokenizer.backbone.', 'backbone.')
+                new_dict[k] = v
+        state_dict = new_dict
+        try:
+            model_without_dp.load_state_dict(state_dict)
+        except:
+            neq_load_customized(model_without_dp, state_dict, verbose=True)
+    elif network == 's3ds' and pretask in ['glosscls']:
         filename = glob.glob(os.path.join(model_path, '*.pth.tar'))
         checkpoint = torch.load(filename[0], map_location='cpu')
         state_dict = checkpoint['state_dict']
