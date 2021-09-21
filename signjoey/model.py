@@ -745,21 +745,24 @@ def build_model(
             network = cfg["tokenizer"]["architecture"]
             if cfg["tokenizer"].get('pretask','default')=='default':
                 pretask = pre_task[network]
+            elif cfg["tokenizer"].get('pretask', 'default') == 'scratch':
+                print('Train 3D backbone from scratch ...')
+                pass 
             else:
-                pretask = cfg["tokenizer"].get('pretask','default')
-            ckpt_filename = os.path.join(
-                cfg["tokenizer"]["pretrained_ckpt"], 
-                '%s_%s_ckpt' % (network, pretask))
-            success = get_premodel_weight(
-                network=network,
-                pretask=pretask,
-                model_without_dp=tokenizer, 
-                model_path=ckpt_filename)
-            if success:
-                print('Load model {} from {} ... success {}'.format(
-                    network, ckpt_filename, success))
-            else:
-                raise NotImplementedError
+                pretask = cfg["tokenizer"].get('pretask')
+                ckpt_filename = os.path.join(
+                    cfg["tokenizer"]["pretrained_ckpt"], 
+                    '%s_%s_ckpt' % (network, pretask))
+                success = get_premodel_weight(
+                    network=network,
+                    pretask=pretask,
+                    model_without_dp=tokenizer, 
+                    model_path=ckpt_filename)
+                if success:
+                    print('Load model {} from {} ... success {}'.format(
+                        network, ckpt_filename, success))
+                else:
+                    raise NotImplementedError
             
         else:
             

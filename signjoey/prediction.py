@@ -356,8 +356,8 @@ def validate_on_data(
 
     for k, s in estimated_mean_scores.items():
         results['valid_scores'][k] = s
-    print('rank{}: estimated_mean {}'.format(
-        os.environ['LOCAL_RANK'], estimated_mean_scores))
+    # print('rank{}: estimated_mean {}'.format(
+    #     os.environ['LOCAL_RANK'], estimated_mean_scores))
     # input()
     return results
 
