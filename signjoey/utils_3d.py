@@ -62,6 +62,13 @@ def get_data_transform(mode, dataset_info):
             T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225], channel=0),
         ])
         data_transform = transforms.Compose(ops)
+    elif dataset_info['model'] == 's3ds' and dataset_info['pretask'] == 'imagenet':
+        ops.extend([
+            A.ToTensor(),
+            T.Stack(dim=1),
+            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225], channel=0),
+        ])
+        data_transform = transforms.Compose(ops)
     elif dataset_info['model'] == 's3dt' and dataset_info['pretask'] == 'milnce':
         ## desired data range [0,1]
         ops.extend([
@@ -274,7 +281,8 @@ def get_premodel_weight(network, pretask, model_without_dp, model_path):
             model_without_dp.load_state_dict(state_dict)
         except:
             neq_load_customized(model_without_dp, state_dict, verbose=True)
-    elif network == 's3ds' and pretask in ['glosscls']:
+
+    elif network == 's3ds' and pretask == 'glosscls':
         filename = glob.glob(os.path.join(model_path, '*.pth.tar'))
         checkpoint = torch.load(filename[0], map_location='cpu')
         state_dict = checkpoint['state_dict']
@@ -283,6 +291,22 @@ def get_premodel_weight(network, pretask, model_without_dp, model_path):
         except:
             neq_load_customized(model_without_dp, state_dict, verbose=True)
         print('Succesful load s3ds_glosscls')
+
+    elif network == 's3ds' and pretask == 'imagenet':
+        filename = glob.glob(os.path.join(model_path, '*.ckpt'))
+        checkpoint = torch.load(filename[0], map_location='cpu')
+        state_dict = checkpoint
+        new_dict = {}
+        for k, v in state_dict.items():
+            k = 'backbone.'+k
+            new_dict[k] = v
+        state_dict = new_dict
+        try:
+            model_without_dp.load_state_dict(state_dict)
+        except:
+            neq_load_customized(model_without_dp, state_dict, verbose=True)
+        print('Succesful load s3ds_imagenet from {}'.format(filename))
+
     elif network == 'i3d' and pretask == 'glosscls':
         #filename = glob.glob(os.path.join(model_path, '*.pt'))
         #checkpoint = torch.load(filename[0], map_location='cpu')
