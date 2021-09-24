@@ -26,11 +26,20 @@ class Encoder(nn.Module):
 
 class NullEncoder(Encoder):
     def __init__(self,
-        emb_size):
+        emb_size, pe=False):
         super(NullEncoder, self).__init__()
         self._output_size = emb_size
+        if pe:
+            print('Turn on positional encoding')
+            self.pe = PositionalEncoding(emb_size)
+        else:
+            self.pe = None
     def forward(self, embed_src, src_length=None, mask=None):
-        return embed_src, embed_src
+        if self.pe:
+            x = self.pe(embed_src)
+            return x, x
+        else:
+            return embed_src, embed_src
 
 class RecurrentEncoder(Encoder):
     """Encodes a sequence of word embeddings"""
@@ -179,6 +188,7 @@ class TransformerEncoder(Encoder):
         dropout: float = 0.1,
         emb_dropout: float = 0.1,
         freeze: bool = False,
+        pe: bool = True,
         **kwargs
     ):
         """
@@ -209,7 +219,11 @@ class TransformerEncoder(Encoder):
         )
 
         self.layer_norm = nn.LayerNorm(hidden_size, eps=1e-6)
-        self.pe = PositionalEncoding(hidden_size)
+        if pe:
+            self.pe = PositionalEncoding(hidden_size)
+        else:
+            print('Turn off positional encoding')
+            self.pe = None
         self.emb_dropout = nn.Dropout(p=emb_dropout)
 
         self._output_size = hidden_size
@@ -239,7 +253,10 @@ class TransformerEncoder(Encoder):
             - hidden_concat: last hidden state with
                 shape (batch_size, directions*hidden)
         """
-        x = self.pe(embed_src)  # add position encoding to word embeddings
+        if self.pe:
+            x = self.pe(embed_src)  # add position encoding to word embeddings
+        else:
+            x = embed_src
         x = self.emb_dropout(x)
 
         for layer in self.layers:

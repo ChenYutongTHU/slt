@@ -645,16 +645,16 @@ def build_model(
             cfg["encoder"]["embeddings"]["embedding_dim"]
             == cfg["encoder"]["hidden_size"]
         ), "for transformer, emb_size must be hidden_size"
-
         encoder = TransformerEncoder(
-            **cfg["encoder"],
+            **cfg["encoder"], #default pe=True
             emb_size=sgn_embed.embedding_dim,
             emb_dropout=enc_emb_dropout,
         )
     elif cfg["encoder"].get("type", "recurrent") == "empty":
         assert not do_translation
-        encoder = NullEncoder(
-            emb_size=sgn_embed.embedding_dim
+        encoder = NullEncoder( 
+            emb_size=sgn_embed.embedding_dim, #default pe=Fals
+            pe=cfg["encoder"].get("pe",False)
         )
     else:
         encoder = RecurrentEncoder(
