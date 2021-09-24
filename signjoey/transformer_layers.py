@@ -15,7 +15,7 @@ class MultiHeadedAttention(nn.Module):
     https://github.com/OpenNMT/OpenNMT-py
     """
 
-    def __init__(self, num_heads: int, size: int, dropout: float = 0.1):
+    def __init__(self, num_heads: int, size: int, dropout: float = 0.1, output_attention=False):
         """
         Create a multi-headed attention layer.
         :param num_heads: the number of heads
@@ -37,6 +37,8 @@ class MultiHeadedAttention(nn.Module):
         self.output_layer = nn.Linear(size, size)
         self.softmax = nn.Softmax(dim=-1)
         self.dropout = nn.Dropout(dropout)
+
+        self.output_attention = output_attention
 
     def forward(self, k: Tensor, v: Tensor, q: Tensor, mask: Tensor = None):
         """
@@ -86,8 +88,10 @@ class MultiHeadedAttention(nn.Module):
         )
 
         output = self.output_layer(context)
-
-        return output
+        if self.output_attention:
+            return output, attention
+        else:
+            return output
 
 
 # pylint: disable=arguments-differ
@@ -171,7 +175,8 @@ class TransformerEncoderLayer(nn.Module):
     """
 
     def __init__(
-        self, size: int = 0, ff_size: int = 0, num_heads: int = 0, dropout: float = 0.1
+        self, size: int = 0, ff_size: int = 0, num_heads: int = 0, dropout: float = 0.1,
+        output_attention: bool=False
     ):
         """
         A single Transformer layer.
@@ -183,12 +188,13 @@ class TransformerEncoderLayer(nn.Module):
         super(TransformerEncoderLayer, self).__init__()
 
         self.layer_norm = nn.LayerNorm(size, eps=1e-6)
-        self.src_src_att = MultiHeadedAttention(num_heads, size, dropout=dropout)
+        self.src_src_att = MultiHeadedAttention(num_heads, size, dropout=dropout, output_attention=output_attention)
         self.feed_forward = PositionwiseFeedForward(
             input_size=size, ff_size=ff_size, dropout=dropout
         )
         self.dropout = nn.Dropout(dropout)
         self.size = size
+        self.output_attention = output_attention
 
     # pylint: disable=arguments-differ
     def forward(self, x: Tensor, mask: Tensor) -> Tensor:
@@ -203,10 +209,16 @@ class TransformerEncoderLayer(nn.Module):
         :return: output tensor
         """
         x_norm = self.layer_norm(x)
-        h = self.src_src_att(x_norm, x_norm, x_norm, mask)
+        if self.output_attention:
+            h, attention = self.src_src_att(x_norm, x_norm, x_norm, mask)
+        else:
+            h = self.src_src_att(x_norm, x_norm, x_norm, mask)
         h = self.dropout(h) + x
         o = self.feed_forward(h)
-        return o
+        if self.output_attention:
+            return o, attention
+        else:
+            return o
 
 
 class TransformerDecoderLayer(nn.Module):

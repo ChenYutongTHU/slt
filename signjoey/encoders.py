@@ -189,6 +189,7 @@ class TransformerEncoder(Encoder):
         emb_dropout: float = 0.1,
         freeze: bool = False,
         pe: bool = True,
+        output_attention: bool = False,
         **kwargs
     ):
         """
@@ -213,11 +214,12 @@ class TransformerEncoder(Encoder):
                     ff_size=ff_size,
                     num_heads=num_heads,
                     dropout=dropout,
+                    output_attention=output_attention
                 )
                 for _ in range(num_layers)
             ]
         )
-
+        self.output_attention = output_attention
         self.layer_norm = nn.LayerNorm(hidden_size, eps=1e-6)
         if pe:
             self.pe = PositionalEncoding(hidden_size)
@@ -258,10 +260,20 @@ class TransformerEncoder(Encoder):
         else:
             x = embed_src
         x = self.emb_dropout(x)
-
+        if self.output_attention:
+            attentions = []
         for layer in self.layers:
-            x = layer(x, mask)
-        return self.layer_norm(x), None
+            if self.output_attention:
+                x, attention = layer(x, mask)
+                attentions.append(attention)
+            else:
+                x = layer(x, mask)
+
+        if self.output_attention:
+            attentions = torch.stack(attentions, dim=1)
+            return self.layer_norm(x), None, attentions # None -> encoder hidden(unused)
+        else:
+            return self.layer_norm(x), None
 
     def __repr__(self):
         return "%s(num_layers=%r, num_heads=%r)" % (

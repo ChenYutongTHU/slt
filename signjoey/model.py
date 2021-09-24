@@ -57,7 +57,7 @@ def get_loss_for_batch(
 
     # Do a forward pass
     if input_data=='feature':
-        decoder_outputs, gloss_probabilities = model(
+        decoder_outputs, gloss_probabilities, attention = model(
             sgn=batch.sgn,
             sgn_mask=batch.sgn_mask,
             sgn_lengths=batch.sgn_lengths,
@@ -65,7 +65,7 @@ def get_loss_for_batch(
             txt_mask=batch.txt_mask,
             )
     else:
-        (decoder_outputs, gloss_probabilities), batch.sgn, batch.sgn_mask, batch.sgn_lengths = model(
+        (decoder_outputs, gloss_probabilities, attention), batch.sgn, batch.sgn_mask, batch.sgn_lengths = model(
             sgn_img=batch.sgn_img,
             sgn_mask=batch.sgn_mask,
             sgn_lengths=batch.sgn_lengths,
@@ -103,7 +103,8 @@ def get_loss_for_batch(
     else:
         translation_loss = None
 
-    return recognition_loss, translation_loss
+
+    return recognition_loss, translation_loss, attention
 
 
 class CNN(torch.nn.Module):
@@ -224,10 +225,14 @@ class SignModel(nn.Module):
         :param txt_mask: target mask
         :return: decoder outputs
         """
-        encoder_output, encoder_hidden = self.encode(
+        encoder_outputs = self.encode(
             sgn=sgn, sgn_mask=sgn_mask, sgn_length=sgn_lengths
         )
-
+        if len(encoder_outputs) == 3:
+            encoder_output, encoder_hidden, attention = encoder_outputs
+        else:
+            encoder_output, encoder_hidden = encoder_outputs
+            attention=None
         if self.do_recognition:
             # Gloss Recognition Part
             # N x T x C
@@ -252,7 +257,7 @@ class SignModel(nn.Module):
         else:
             decoder_outputs = None
 
-        return decoder_outputs, gloss_probabilities
+        return decoder_outputs, gloss_probabilities, attention
 
     def encode(
         self, sgn: Tensor, sgn_mask: Tensor, sgn_length: Tensor
@@ -384,7 +389,7 @@ class SignModel(nn.Module):
             stacked_attention_scores: attention scores for batch
         """
 
-        encoder_output, encoder_hidden = self.encode(
+        encoder_output, encoder_hidden, _ = self.encode(
             sgn=batch.sgn, sgn_mask=batch.sgn_mask, sgn_length=batch.sgn_lengths
         )
 
@@ -646,7 +651,7 @@ def build_model(
             == cfg["encoder"]["hidden_size"]
         ), "for transformer, emb_size must be hidden_size"
         encoder = TransformerEncoder(
-            **cfg["encoder"], #default pe=True
+            **cfg["encoder"], #default pe=True, output_attention=False
             emb_size=sgn_embed.embedding_dim,
             emb_dropout=enc_emb_dropout,
         )
