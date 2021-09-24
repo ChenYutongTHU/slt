@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from itertools import groupby
 from signjoey.initialization import initialize_model
 from signjoey.embeddings import Embeddings, SpatialEmbeddings
-from signjoey.encoders import Encoder, RecurrentEncoder, TransformerEncoder
+from signjoey.encoders import Encoder, RecurrentEncoder, TransformerEncoder, NullEncoder
 from signjoey.decoders import Decoder, RecurrentDecoder, TransformerDecoder
 from signjoey.search import beam_search, greedy
 from signjoey.vocabulary import (
@@ -650,6 +650,11 @@ def build_model(
             **cfg["encoder"],
             emb_size=sgn_embed.embedding_dim,
             emb_dropout=enc_emb_dropout,
+        )
+    elif cfg["encoder"].get("type", "recurrent") == "empty":
+        assert not do_translation
+        encoder = NullEncoder(
+            emb_size=sgn_embed.embedding_dim
         )
     else:
         encoder = RecurrentEncoder(

@@ -24,6 +24,13 @@ class Encoder(nn.Module):
         """
         return self._output_size
 
+class NullEncoder(Encoder):
+    def __init__(self,
+        emb_size):
+        super(NullEncoder, self).__init__()
+        self._output_size = emb_size
+    def forward(self, embed_src, src_length=None, mask=None):
+        return embed_src, embed_src
 
 class RecurrentEncoder(Encoder):
     """Encodes a sequence of word embeddings"""
@@ -122,7 +129,7 @@ class RecurrentEncoder(Encoder):
         # apply dropout to the rnn input
         embed_src = self.emb_dropout(embed_src)
 
-        packed = pack_padded_sequence(embed_src, src_length, batch_first=True)
+        packed = pack_padded_sequence(embed_src, src_length.cpu(), batch_first=True)
         output, hidden = self.rnn(packed)
 
         # pylint: disable=unused-variable
