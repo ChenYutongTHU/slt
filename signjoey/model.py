@@ -389,10 +389,14 @@ class SignModel(nn.Module):
             stacked_attention_scores: attention scores for batch
         """
 
-        encoder_output, encoder_hidden, _ = self.encode(
+        encoder_outputs = self.encode(
             sgn=batch.sgn, sgn_mask=batch.sgn_mask, sgn_length=batch.sgn_lengths
         )
-
+        if len(encoder_outputs) == 3:
+            encoder_output, encoder_hidden, attention = encoder_outputs
+        else:
+            encoder_output, encoder_hidden = encoder_outputs
+            attention=None
         if self.do_recognition:
             # Gloss Recognition Part
             # N x T x C

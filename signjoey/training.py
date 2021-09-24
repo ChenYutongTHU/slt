@@ -945,7 +945,7 @@ class TrainManager:
         """
 
         with torch.cuda.amp.autocast(enabled=self.use_amp):
-            recognition_loss, translation_loss = get_loss_for_batch(
+            recognition_loss, translation_loss, _ = get_loss_for_batch(
                 model=self.model,
                 batch=batch,
                 recognition_loss_function=self.recognition_loss_function
