@@ -30,7 +30,8 @@ from signjoey.helpers import (
     make_logger,
     set_seed,
     symlink_update,
-    is_main_process
+    is_main_process,
+    visualize_bn
 )
 from signjoey.model import SignModel, get_loss_for_batch
 from signjoey.prediction import validate_on_data
@@ -109,7 +110,7 @@ class TrainManager:
         self.do_translation = (
             config["training"].get("translation_loss_weight", 1.0) > 0.0
         )
-
+        self.visualize_bn = train_config.get("visualize_bn",True)
         # Get Recognition and Translation specific parameters
         if self.do_recognition:
             self._get_recognition_params(train_config=train_config)
@@ -228,8 +229,17 @@ class TrainManager:
                 model_load_path,
                 reset_best_ckpt=reset_best_ckpt,
                 reset_scheduler=reset_scheduler,
-                reset_optimizer=reset_optimizer,
+                reset_optimizer=reset_optimizer
             )
+        reset_running_stats = train_config.get("reset_running_stats", False)
+        if reset_running_stats:
+            def bn_reset_running_stats(m):
+                if m.training==True: #prevent reset frozen layers stats
+                    classname = m.__class__.__name__
+                    if classname.find('BatchNorm') != -1:
+                        m.reset_running_stats()
+            self.model.apply(bn_reset_running_stats)
+            self.logger.info('Reset running stats for BN!')
         if distributed:
             local_rank = int(os.environ['LOCAL_RANK'])
             self.model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(self.model)
@@ -523,6 +533,23 @@ class TrainManager:
                             "train/train_translation_loss", translation_loss, self.steps
                         )
                     epoch_translation_loss += translation_loss.detach().cpu().numpy()
+
+                if self.visualize_bn and self.steps%self.logging_freq==0:
+                    if is_main_process():
+                        visualize_bn(model=self.model.module,
+                            writer=self.tb_writer,
+                            step=self.steps)
+
+                if is_main_process():
+                    flag = False
+                    for name, param in self.model.named_buffers():
+                        if 'bn' in name and 'tokenizer' in name and not flag:
+                            if 'num_batches_tracked' in name:
+                                self.tb_writer.add_scalar(name, param, self.steps)
+                                flag=True
+                        if 'sgn_embed.norm' in name:
+                            if 'num_batches_tracked' in name:
+                                self.tb_writer.add_scalar(name, param, self.steps)
 
                 count = self.batch_multiplier if update else count
                 count -= 1

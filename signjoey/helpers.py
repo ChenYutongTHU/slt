@@ -323,4 +323,14 @@ def is_main_process():
     return 'WORLD_SIZE' not in os.environ or os.environ['WORLD_SIZE']=='1' or os.environ['LOCAL_RANK']=='0'
 
 
+def visualize_bn(model, writer, step):
+    for name, param in model.named_parameters():
+        #print(name)
+        if 'bn' in name or 'sgn_embed.norm' in name:
+            #print(name, param.size())
+            writer.add_histogram(name, param, step)
 
+    for name, param in model.named_buffers():
+        #print(name)
+        if 'bn' in name or 'sgn_embed.norm' in name:
+            writer.add_histogram(name, param, step)

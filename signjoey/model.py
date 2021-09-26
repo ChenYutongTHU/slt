@@ -503,6 +503,7 @@ class Tokenizer_SignModel(nn.Module):
         self.do_recognition = self.signmodel.do_recognition
         self.do_translation = self.signmodel.do_translation
         self.track_bn = track_bn
+        assert self.track_bn, 'No longer support track_bn=False now'
         self.bn_train_mode = bn_train_mode
         
         def set_track_running_stats(m):
@@ -517,8 +518,8 @@ class Tokenizer_SignModel(nn.Module):
                 #         m,  m.track_running_stats))
 
         if self.track_bn==False:
-            print('Set track_running_stats to False')
-            self.apply(set_track_running_stats)
+            print('Set batchnorm in Toeknizer track_running_stats to False')
+            self.tokenizer.apply(set_track_running_stats)
 
     def set_bn_eval(self, verbose=False):
         def _set_bn_eval_(m):
@@ -527,10 +528,10 @@ class Tokenizer_SignModel(nn.Module):
                 m.eval()
         if self.bn_train_mode=='eval':
             if verbose:
-                print('Set batchnorm to eval mode')
-            self.apply(_set_bn_eval_)
+                print('Set batchnorm in tokenizer  to eval mode')
+            self.tokenizer.apply(_set_bn_eval_)
         elif verbose:
-            print('Set batchnorm to Train mode')
+            print('Set batchnorm in tokenizer to Train mode')
 
     def set_train(self, verbose=False):
         self.tokenizer.set_train()
