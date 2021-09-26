@@ -233,6 +233,7 @@ class TrainManager:
         if distributed:
             local_rank = int(os.environ['LOCAL_RANK'])
             self.model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(self.model)
+            print(self.model.tokenizer.backbone.base[10].branch3[1].bn)
             self.model = DDP(self.model, device_ids=[local_rank], output_device=local_rank)
 
 
@@ -467,7 +468,7 @@ class TrainManager:
             elif self.scheduler is not None and self.scheduler_step_at == "epoch":
                 self.scheduler.step()#(epoch=epoch_no)
 
-            self.model.module.set_train()
+            self.model.module.set_train(verbose=(is_main_process()))
             start = time.time()
             total_valid_duration = 0
             count = self.batch_multiplier - 1

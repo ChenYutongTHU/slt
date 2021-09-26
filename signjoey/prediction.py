@@ -151,7 +151,28 @@ def validate_on_data(
     )
 
     # disable dropout
-    model.module.set_eval()
+    if cfg['data'].get('eval_mode','eval')=='eval':
+        model.module.set_eval()
+    else:
+        # print('Set module.set_eval()')
+        # model.module.set_eval()
+        # print(model.module.tokenizer.training)
+        # print(model.module.signmodel.training)
+        # print('weight', model.module.tokenizer.backbone.base[10].branch3[1].bn.weight.shape)
+        # print('bias', model.module.tokenizer.backbone.base[10].branch3[1].bn.bias.shape)
+        # print('running_mean', model.module.tokenizer.backbone.base[10].branch3[1].bn.running_mean.shape)
+        # print('running_var', model.module.tokenizer.backbone.base[10].branch3[1].bn.running_var.shape)      
+
+        print('Set module.set_train()')
+        model.module.set_train()
+        # print(model.module.tokenizer.training)
+        # print(model.module.signmodel.training)
+        # print('weight', model.module.tokenizer.backbone.base[10].branch3[1].bn.weight.shape)
+        # print('bias', model.module.tokenizer.backbone.base[10].branch3[1].bn.bias.shape)
+        # print('running_mean', model.module.tokenizer.backbone.base[10].branch3[1].bn.running_mean.shape)
+        # print('running_var', model.module.tokenizer.backbone.base[10].branch3[1].bn.running_var.shape)
+        # input()
+
     # don't track gradients during validation
     with torch.no_grad():
         all_gls_outputs = []

@@ -489,7 +489,8 @@ class SignModel(nn.Module):
 
 
 class Tokenizer_SignModel(nn.Module):
-    def __init__(self, tokenizer_type, tokenizer, signmodel):
+    def __init__(self, tokenizer_type, tokenizer, signmodel, 
+        track_bn=True, bn_train_mode='train'):
         super().__init__()
         self.tokenizer_type = tokenizer_type
         self.tokenizer = tokenizer
@@ -501,10 +502,40 @@ class Tokenizer_SignModel(nn.Module):
         self.txt_vocab = self.signmodel.txt_vocab
         self.do_recognition = self.signmodel.do_recognition
         self.do_translation = self.signmodel.do_translation
-    
-    def set_train(self):
+        self.track_bn = track_bn
+        self.bn_train_mode = bn_train_mode
+        
+        def set_track_running_stats(m):
+            classname = m.__class__.__name__
+            if classname.find('BatchNorm') != -1:
+                m.track_running_stats = False
+                m.register_buffer("running_mean", None)
+                m.register_buffer("running_var", None)
+                m.register_buffer("num_batches_tracked", None)
+                # if int(os.environ['LOCAL_RANK'])==0:
+                #     print('Set bn module {} to tracking running stats = {}'.format(
+                #         m,  m.track_running_stats))
+
+        if self.track_bn==False:
+            print('Set track_running_stats to False')
+            self.apply(set_track_running_stats)
+
+    def set_bn_eval(self, verbose=False):
+        def _set_bn_eval_(m):
+            classname = m.__class__.__name__
+            if classname.find('BatchNorm') != -1:
+                m.eval()
+        if self.bn_train_mode=='eval':
+            if verbose:
+                print('Set batchnorm to eval mode')
+            self.apply(_set_bn_eval_)
+        elif verbose:
+            print('Set batchnorm to Train mode')
+
+    def set_train(self, verbose=False):
         self.tokenizer.set_train()
         self.signmodel.train()
+        self.set_bn_eval(verbose)
 
     def set_eval(self):
         self.eval()
@@ -785,5 +816,7 @@ def build_model(
         tokenizer_signmodel = Tokenizer_SignModel(
             tokenizer_type=cfg["tokenizer"]["architecture"],
             tokenizer=tokenizer,
-            signmodel=sign_model)
+            signmodel=sign_model,
+            track_bn=cfg.get("track_bn", True),
+            bn_train_mode=cfg.get("bn_train_mode", 'train'))
         return tokenizer_signmodel
