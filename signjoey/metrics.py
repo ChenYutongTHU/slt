@@ -112,6 +112,11 @@ def wer_list(references, hypotheses):
         "del_rate": del_rate,
         "ins_rate": ins_rate,
         "sub_rate": sub_rate,
+        "del":total_del,
+        "ins":total_ins,
+        "sub":total_sub,
+        "ref_len":total_ref_len,
+        "error":total_error,
     }
 
 

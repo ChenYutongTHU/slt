@@ -6,6 +6,10 @@ yutong_experiments
 data/
 .idea/
 *.ipynb
+case_study/
+3d_pretrainedmodels
+*.sh
+base_annotations
 *.pyc
 unused
 demo.py

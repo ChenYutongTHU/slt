@@ -373,7 +373,7 @@ class SignModel(nn.Module):
         recognition_beam_size: int = 1,
         translation_beam_size: int = 1,
         translation_beam_alpha: float = -1,
-        translation_max_output_length: int = 100,
+        translation_max_output_length: int = 100
     ) -> (np.array, np.array, np.array):
         """
         Get outputs and attentions scores for a given batch
@@ -411,25 +411,35 @@ class SignModel(nn.Module):
                 axis=-1,
             )
 
-            assert recognition_beam_size > 0
-            ctc_decode, _ = tf.nn.ctc_beam_search_decoder(
-                inputs=tf_gloss_probabilities,
-                sequence_length=batch.sgn_lengths.cpu().detach().numpy(),
-                beam_width=recognition_beam_size,
-                top_paths=1,
-            )
-            ctc_decode = ctc_decode[0]
-            # Create a decoded gloss list for each sample
-            tmp_gloss_sequences = [[] for i in range(gloss_scores.shape[0])]
-            for (value_idx, dense_idx) in enumerate(ctc_decode.indices):
-                tmp_gloss_sequences[dense_idx[0]].append(
-                    ctc_decode.values[value_idx].numpy() + 1
+            def ctc_decode(tf_gloss_probabilities, batch, recognition_beam_size, gloss_scores):
+                assert recognition_beam_size > 0
+                ctc_decode, _ = tf.nn.ctc_beam_search_decoder(
+                    inputs=tf_gloss_probabilities,
+                    sequence_length=batch.sgn_lengths.cpu().detach().numpy(),
+                    beam_width=recognition_beam_size,
+                    top_paths=1,
                 )
-            decoded_gloss_sequences = []
-            for seq_idx in range(0, len(tmp_gloss_sequences)):
-                decoded_gloss_sequences.append(
-                    [x[0] for x in groupby(tmp_gloss_sequences[seq_idx])]
-                )
+                ctc_decode = ctc_decode[0]
+                # Create a decoded gloss list for each sample
+                tmp_gloss_sequences = [[] for i in range(gloss_scores.shape[0])]
+                for (value_idx, dense_idx) in enumerate(ctc_decode.indices):
+                    tmp_gloss_sequences[dense_idx[0]].append(
+                        ctc_decode.values[value_idx].numpy() + 1
+                    )
+                decoded_gloss_sequences = []
+                for seq_idx in range(0, len(tmp_gloss_sequences)):
+                    decoded_gloss_sequences.append(
+                        [x[0] for x in groupby(tmp_gloss_sequences[seq_idx])]
+                    )
+                return decoded_gloss_sequences
+
+            if type(recognition_beam_size)!=list:
+                decoded_gloss_sequences = ctc_decode(tf_gloss_probabilities, batch, recognition_beam_size, gloss_scores)
+            else:
+                decoded_gloss_sequences = {}
+                for rbs in recognition_beam_size:
+                    decoded_gloss_sequences[rbs] = ctc_decode(tf_gloss_probabilities, batch, rbs, gloss_scores)
+
         else:
             decoded_gloss_sequences = None
 

@@ -534,7 +534,7 @@ class TrainManager:
                         )
                     epoch_translation_loss += translation_loss.detach().cpu().numpy()
 
-                if self.visualize_bn and self.steps%self.logging_freq==0:
+                if self.visualize_bn and self.steps%(self.logging_freq*100)==0:
                     if is_main_process():
                         visualize_bn(model=self.model.module,
                             writer=self.tb_writer,
@@ -671,11 +671,11 @@ class TrainManager:
                                 self.steps,
                             )
                             self.tb_writer.add_scalar(
-                                "valid/wer_rank0", val_res["valid_scores"]["wer"], self.steps
+                                "valid/wer_rank0", val_res["valid_scores_gathered"]["wer"], self.steps
                             )
                             self.tb_writer.add_scalars(
                                 "valid/wer_scores",
-                                val_res["valid_scores"]["wer_scores"],
+                                val_res["valid_scores_gathered"]["wer_scores"],
                                 self.steps,
                             )
 
@@ -691,17 +691,17 @@ class TrainManager:
 
                             # Log Scores
                             self.tb_writer.add_scalar(
-                                "valid/chrf", val_res["valid_scores"]["chrf"], self.steps
+                                "valid/chrf", val_res["valid_scores_gathered"]["chrf"], self.steps
                             )
                             self.tb_writer.add_scalar(
-                                "valid/rouge", val_res["valid_scores"]["rouge"], self.steps
+                                "valid/rouge", val_res["valid_scores_gathered"]["rouge"], self.steps
                             )
                             self.tb_writer.add_scalar(
-                                "valid/bleu", val_res["valid_scores"]["bleu"], self.steps
+                                "valid/bleu", val_res["valid_scores_gathered"]["bleu"], self.steps
                             )
                             self.tb_writer.add_scalars(
                                 "valid/bleu_scores",
-                                val_res["valid_scores"]["bleu_scores"],
+                                val_res["valid_scores_gathered"]["bleu_scores"],
                                 self.steps,
                             )
 
@@ -715,14 +715,14 @@ class TrainManager:
                         assert self.do_translation
                         ckpt_score = val_res["valid_ppl"]
                     else:
-                        ckpt_score = val_res["valid_scores"][self.eval_metric]
+                        ckpt_score = val_res["valid_scores_gathered"][self.eval_metric]
 
                     self.logger.info('rank{} ckpt_score {}'.format(os.environ['LOCAL_RANK'], ckpt_score))
 
                     new_best = False
                     if self.is_best(ckpt_score):
                         self.best_ckpt_score = ckpt_score
-                        self.best_all_ckpt_scores = val_res["valid_scores"] if is_main_process() else None
+                        self.best_all_ckpt_scores = val_res["valid_scores_gathered"] if is_main_process() else None
                         self.best_ckpt_iteration = self.steps
                         self.logger.info(
                             "Hooray! New best validation result [%s]!",
@@ -814,7 +814,7 @@ class TrainManager:
                     if is_main_process():
                         self._add_report(
                             current_lr=current_lr,
-                            valid_scores=val_res["valid_scores"],
+                            valid_scores_gathered=val_res["valid_scores_gathered"],
                             valid_recognition_loss=val_res["valid_recognition_loss"]
                             if self.do_recognition
                             else None,
@@ -853,33 +853,33 @@ class TrainManager:
                             val_res["valid_ppl"] if self.do_translation else -1,
                             self.eval_metric.upper(),
                             # WER
-                            val_res["valid_scores"]["wer"] if self.do_recognition else -1,
-                            val_res["valid_scores"]["wer_scores"]["del_rate"]
+                            val_res["valid_scores_gathered"]["wer"] if self.do_recognition else -1,
+                            val_res["valid_scores_gathered"]["wer_scores"]["del_rate"]
                             if self.do_recognition
                             else -1,
-                            val_res["valid_scores"]["wer_scores"]["ins_rate"]
+                            val_res["valid_scores_gathered"]["wer_scores"]["ins_rate"]
                             if self.do_recognition
                             else -1,
-                            val_res["valid_scores"]["wer_scores"]["sub_rate"]
+                            val_res["valid_scores_gathered"]["wer_scores"]["sub_rate"]
                             if self.do_recognition
                             else -1,
                             # BLEU
-                            val_res["valid_scores"]["bleu"] if self.do_translation else -1,
-                            val_res["valid_scores"]["bleu_scores"]["bleu1"]
+                            val_res["valid_scores_gathered"]["bleu"] if self.do_translation else -1,
+                            val_res["valid_scores_gathered"]["bleu_scores"]["bleu1"]
                             if self.do_translation
                             else -1,
-                            val_res["valid_scores"]["bleu_scores"]["bleu2"]
+                            val_res["valid_scores_gathered"]["bleu_scores"]["bleu2"]
                             if self.do_translation
                             else -1,
-                            val_res["valid_scores"]["bleu_scores"]["bleu3"]
+                            val_res["valid_scores_gathered"]["bleu_scores"]["bleu3"]
                             if self.do_translation
                             else -1,
-                            val_res["valid_scores"]["bleu_scores"]["bleu4"]
+                            val_res["valid_scores_gathered"]["bleu_scores"]["bleu4"]
                             if self.do_translation
                             else -1,
                             # Other
-                            val_res["valid_scores"]["chrf"] if self.do_translation else -1,
-                            val_res["valid_scores"]["rouge"] if self.do_translation else -1,
+                            val_res["valid_scores_gathered"]["chrf"] if self.do_translation else -1,
+                            val_res["valid_scores_gathered"]["rouge"] if self.do_translation else -1,
                         )
 
                         self._log_examples(
@@ -898,23 +898,26 @@ class TrainManager:
                             else None,
                         )
 
-                        valid_seq = [s for s in valid_data.sequence]
-                        # store validation set outputs and references
-                        if self.do_recognition:
-                            self._store_outputs(
-                                "dev.hyp.gls", valid_seq, val_res["gls_hyp"], "gls"
-                            )
-                            self._store_outputs(
-                                "references.dev.gls", valid_seq, val_res["gls_ref"]
-                            )
+                    valid_seq = [s for s in valid_data.sequence]
+                    # store validation set outputs and references
+                    if self.do_recognition:
+                        self._store_outputs(
+                            "dev.hyp.gls.rank{}".format(os.environ['LOCAL_RANK']), valid_seq, val_res["gls_hyp"], "gls"
+                        )
+                        self._store_outputs(
+                            "references.dev.gls.rank{}".format(os.environ['LOCAL_RANK']), 
+                            valid_seq, val_res["gls_ref"]
+                        )
 
-                        if self.do_translation:
-                                self._store_outputs(
-                                    "dev.hyp.txt", valid_seq, val_res["txt_hyp"], "txt"
-                                )
-                                self._store_outputs(
-                                    "references.dev.txt", valid_seq, val_res["txt_ref"]
-                                )
+                    if self.do_translation:
+                            self._store_outputs(
+                                "dev.hyp.txt.rank{}".format(os.environ['LOCAL_RANK']),
+                                 valid_seq, val_res["txt_hyp"], "txt"
+                            )
+                            self._store_outputs(
+                                "references.dev.txt.rank{}".format(os.environ['LOCAL_RANK']), 
+                                valid_seq, val_res["txt_ref"]
+                            )
                     
 
                     if distributed:
@@ -1055,7 +1058,7 @@ class TrainManager:
     def _add_report(
         self,
         current_lr,
-        valid_scores: Dict,
+        valid_scores_gathered: Dict,
         valid_recognition_loss: float,
         valid_translation_loss: float,
         valid_ppl: float,
@@ -1065,7 +1068,7 @@ class TrainManager:
         """
         Append a one-line report to validation logging file.
 
-        :param valid_scores: Dictionary of validation scores
+        :param valid_scores_gathered: Dictionary of validation scores
         :param valid_recognition_loss: validation loss (sum over whole validation set)
         :param valid_translation_loss: validation loss (sum over whole validation set)
         :param valid_ppl: validation perplexity
@@ -1090,25 +1093,25 @@ class TrainManager:
                     valid_ppl if self.do_translation else -1,
                     eval_metric,
                     # WER
-                    valid_scores["wer"] if self.do_recognition else -1,
-                    valid_scores["wer_scores"]["del_rate"]
+                    valid_scores_gathered["wer"] if self.do_recognition else -1,
+                    valid_scores_gathered["wer_scores"]["del_rate"]
                     if self.do_recognition
                     else -1,
-                    valid_scores["wer_scores"]["ins_rate"]
+                    valid_scores_gathered["wer_scores"]["ins_rate"]
                     if self.do_recognition
                     else -1,
-                    valid_scores["wer_scores"]["sub_rate"]
+                    valid_scores_gathered["wer_scores"]["sub_rate"]
                     if self.do_recognition
                     else -1,
                     # BLEU
-                    valid_scores["bleu"] if self.do_translation else -1,
-                    valid_scores["bleu_scores"]["bleu1"] if self.do_translation else -1,
-                    valid_scores["bleu_scores"]["bleu2"] if self.do_translation else -1,
-                    valid_scores["bleu_scores"]["bleu3"] if self.do_translation else -1,
-                    valid_scores["bleu_scores"]["bleu4"] if self.do_translation else -1,
+                    valid_scores_gathered["bleu"] if self.do_translation else -1,
+                    valid_scores_gathered["bleu_scores"]["bleu1"] if self.do_translation else -1,
+                    valid_scores_gathered["bleu_scores"]["bleu2"] if self.do_translation else -1,
+                    valid_scores_gathered["bleu_scores"]["bleu3"] if self.do_translation else -1,
+                    valid_scores_gathered["bleu_scores"]["bleu4"] if self.do_translation else -1,
                     # Other
-                    valid_scores["chrf"] if self.do_translation else -1,
-                    valid_scores["rouge"] if self.do_translation else -1,
+                    valid_scores_gathered["chrf"] if self.do_translation else -1,
+                    valid_scores_gathered["rouge"] if self.do_translation else -1,
                     current_lr,
                     "*" if new_best else "",
                 )
@@ -1194,7 +1197,7 @@ class TrainManager:
         if sub_folder:
             out_folder = os.path.join(self.model_dir, sub_folder)
             if not os.path.exists(out_folder):
-                os.makedirs(out_folder)
+                os.makedirs(out_folder, exist_ok=True)
             current_valid_output_file = "{}/{}.{}".format(out_folder, self.steps, tag)
         else:
             out_folder = self.model_dir
