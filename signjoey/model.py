@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from itertools import groupby
 from signjoey.initialization import initialize_model
 from signjoey.embeddings import Embeddings, SpatialEmbeddings
-from signjoey.encoders import Encoder, RecurrentEncoder, TransformerEncoder, NullEncoder
+from signjoey.encoders import CNNEncoder, Encoder, RecurrentEncoder, TransformerEncoder, NullEncoder
 from signjoey.decoders import Decoder, RecurrentDecoder, TransformerDecoder
 from signjoey.search import beam_search, greedy
 from signjoey.vocabulary import (
@@ -684,7 +684,7 @@ def build_model(
 
     sgn_embed: SpatialEmbeddings = SpatialEmbeddings(
         **cfg["encoder"]["embeddings"],
-        num_heads=cfg["encoder"]["num_heads"],
+        num_heads=cfg["encoder"].get('num_heads', 8),  #used for groupnorm
         input_size=sgn_dim,
     )
 
@@ -706,6 +706,15 @@ def build_model(
         encoder = NullEncoder( 
             emb_size=sgn_embed.embedding_dim, #default pe=Fals
             pe=cfg["encoder"].get("pe",False)
+        )
+    elif cfg["encoder"].get("type", "recurrent") == 'cnn':
+        encoder = CNNEncoder(
+            emb_size=sgn_embed.embedding_dim,
+            pe=cfg["encoder"].get("pe",False),
+            hidden_size=cfg["encoder"].get("hidden_size", 512),
+            num_layers=cfg["encoder"].get("num_layers", 1),
+            masking_before=cfg["encoder"].get("masking_before",'zero'),
+            **cfg["encoder"]["cnn"]
         )
     else:
         encoder = RecurrentEncoder(

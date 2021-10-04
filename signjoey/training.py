@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+from collections import defaultdict
+import pickle
 from typing import List, Dict
 import os
 from typing_extensions import ParamSpec
@@ -75,6 +77,8 @@ class TrainManager:
             self.model_dir = make_model_dir(
                 train_config["model_dir"], overwrite=train_config.get("overwrite", False)
             )
+            os.makedirs(os.path.join(self.model_dir, 'gls'), exist_ok=True)
+            os.makedirs(os.path.join(self.model_dir, 'txt'), exist_ok=True)
         else:
             self.model_dir = train_config["model_dir"]
         
@@ -240,11 +244,41 @@ class TrainManager:
                         m.reset_running_stats()
             self.model.apply(bn_reset_running_stats)
             self.logger.info('Reset running stats for BN!')
+
+
         if distributed:
             local_rank = int(os.environ['LOCAL_RANK'])
             self.model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(self.model)
-            print(self.model.tokenizer.backbone.base[10].branch3[1].bn)
             self.model = DDP(self.model, device_ids=[local_rank], output_device=local_rank)
+
+        self.register_bn_hook = train_config.get('register_bn_hook',False)
+        if self.register_bn_hook:
+            global BN_STATS
+            BN_STATS = defaultdict(lambda:
+                {'running_mean':None,
+                'running_var':None,
+                'batch_mean':[],
+                'batch_var':[]})
+            def compute_bn_stats(module, input):
+                global BN_STATS
+                #input
+                x = input[0] #B,D,T,H,W or B D
+                if x.dim()!=2:
+                    assert x.dim()==5, x.shape
+                    x = x.transpose(1, 4) # B,W,H,T,D
+                    x = x.reshape(-1,x.size(-1))
+                batch_mean = torch.mean(x, 0)
+                batch_var = torch.var(x,0)
+                BN_STATS[module.bn_name]['running_mean'] = module.running_mean.detach().cpu()
+                BN_STATS[module.bn_name]['running_var'] = module.running_var.detach().cpu()
+                BN_STATS[module.bn_name]['batch_mean'].append(batch_mean.detach().cpu())
+                BN_STATS[module.bn_name]['batch_var'].append(batch_var.detach().cpu())
+            for name, m in self.model.module.named_modules():   
+                classname = m.__class__.__name__
+                if classname.find('BatchNorm') != -1:
+                    print(name)
+                    m.bn_name = name
+                    m.register_forward_pre_hook(compute_bn_stats)           
 
 
         # initialize training statistics
@@ -350,6 +384,15 @@ class TrainManager:
 
         self.ckpt_queue.put(model_path)
 
+
+        if self.register_bn_hook:
+            print('here')
+            global BN_STATS
+            print('save ', len(BN_STATS))
+            print(type(BN_STATS))
+            BN_STATS = dict(BN_STATS)
+            with open(os.path.join(self.model_dir, 'BN_STATS_{}.pkl'.format(self.steps)),'wb') as f:
+                pickle.dump(BN_STATS,f)
         # create/modify symbolic link for best checkpoint  
         # since symlink_update is not supported in azure storage, we use copy instead
         symlink_update(

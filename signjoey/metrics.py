@@ -108,10 +108,10 @@ def wer_list(references, hypotheses):
     sub_rate = (total_sub / total_ref_len) * 100
 
     return {
-        "wer": wer,
-        "del_rate": del_rate,
-        "ins_rate": ins_rate,
-        "sub_rate": sub_rate,
+        # "wer": wer,
+        # "del_rate": del_rate,
+        # "ins_rate": ins_rate,
+        # "sub_rate": sub_rate,
         "del":total_del,
         "ins":total_ins,
         "sub":total_sub,

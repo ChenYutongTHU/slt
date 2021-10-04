@@ -224,10 +224,10 @@ def validate_on_data(
                 )
                 
             if do_recognition:
-                total_recognition_loss += batch_recognition_loss
+                total_recognition_loss += batch_recognition_loss.item()
                 total_num_gls_tokens += batch.num_gls_tokens
             if do_translation:
-                total_translation_loss += batch_translation_loss
+                total_translation_loss += batch_translation_loss.item()
                 total_num_txt_tokens += batch.num_txt_tokens
 
 
@@ -244,13 +244,14 @@ def validate_on_data(
                             [bp[sri] for sri in sort_reverse_index]
                         )
             if do_translation:
-                all_txt_outputs.extend(batch_txt_predictions[sort_reverse_index])
+                all_txt_outputs.extend(batch_txt_predictions[sort_reverse_index].cpu())
             all_attention_scores.extend(
-                batch_attention_scores[sort_reverse_index]
+                batch_attention_scores[sort_reverse_index].cpu()
                 if batch_attention_scores is not None
                 else []
             )
-
+    #torch.distributed.barrier()
+    torch.cuda.empty_cache()
     #data -> data_split
     split_indices = get_distributed_sampler_index(
         total_len=len(data), batch_size=batch_size,
@@ -260,7 +261,7 @@ def validate_on_data(
     if do_recognition:
         def get_recognition_results(all_gls_outputs, results, valid_scores):
             all_gls_outputs = all_gls_outputs[:len(split_indices)]
-            assert len(all_gls_outputs) == len(split_indices)
+            assert len(all_gls_outputs) == len(split_indices), (len(all_gls_outputs), len(split_indices))
             if (
                 recognition_loss_function is not None
                 and recognition_loss_weight != 0
@@ -378,20 +379,20 @@ def validate_on_data(
 
         total_num = 0
         for ri, scores_split in enumerate(valid_scores_cuda_gather):
-            total_num += int(scores_split['num_seq'].detach().cpu())
+            total_num += scores_split['num_seq'].item()
 
         for ri, scores_split in enumerate(valid_scores_cuda_gather):
             for k, s in scores_split.items():
                 if 'wer' in k:
                     continue
-                num_seq = scores_split['num_seq'].detach().cpu().numpy()
+                num_seq = scores_split['num_seq'].item()
                 if k!='num_seq':
                     if type(s)==dict:
                         for k_, s_ in s.items():
-                            s_ = s_.detach().cpu().numpy()
+                            s_ = s_.item()
                             estimated_mean_scores[k][k_] += num_seq*s_/total_num
                     else:
-                        s = s.detach().cpu().numpy()
+                        s = s.item()
                         estimated_mean_scores[k] += num_seq*s/total_num
 
     if do_recognition:
@@ -399,11 +400,11 @@ def validate_on_data(
             total_ref_len, total_del, total_ins, total_sub = 0, 0, 0, 0
             total_error = 0
             for ri, scores_split in enumerate(valid_scores_cuda_gather):
-                total_ref_len += int(scores_split['wer_scores']['ref_len'].detach().cpu())
-                total_del += int(scores_split['wer_scores']['del'].detach().cpu())
-                total_ins += int(scores_split['wer_scores']['ins'].detach().cpu())
-                total_sub += int(scores_split['wer_scores']['sub'].detach().cpu())
-                total_error += int(scores_split['wer_scores']['error'].detach().cpu())
+                total_ref_len += scores_split['wer_scores']['ref_len'].item()
+                total_del += scores_split['wer_scores']['del'].item()
+                total_ins += scores_split['wer_scores']['ins'].item()
+                total_sub += scores_split['wer_scores']['sub'].item()
+                total_error += scores_split['wer_scores']['error'].item()
             estimated_mean_scores['wer'] = total_error/total_ref_len*100
             estimated_mean_scores['wer_scores'] = {
                 'del_rate':total_del/total_ref_len*100,
@@ -430,6 +431,7 @@ def validate_on_data(
     else:
         for k, sc in estimated_mean_scores.items():
             results[k]['valid_scores_gathered'] = sc
+    torch.cuda.empty_cache()
     return results
 
 

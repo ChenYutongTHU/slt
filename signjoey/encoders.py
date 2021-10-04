@@ -7,7 +7,7 @@ from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 from signjoey.helpers import freeze_params
 from signjoey.transformer_layers import TransformerEncoderLayer, PositionalEncoding
-
+from signjoey.embeddings import MaskedNorm
 
 # pylint: disable=abstract-method
 class Encoder(nn.Module):
@@ -40,6 +40,72 @@ class NullEncoder(Encoder):
             return x, x
         else:
             return embed_src, embed_src
+class CNNEncoderLayer(nn.Module):
+    def __init__(self,
+                 input_size, output_size, kernel_size=5, stride=1, padding=0):
+        assert stride==1, 'only support stride=1 now otherwise mask should be adjusted'
+        super(CNNEncoderLayer, self).__init__()
+        self.conv_t = nn.Conv1d(input_size, output_size, kernel_size=kernel_size, 
+            stride=stride, padding='same', bias=False)
+        self.bn_t = MaskedNorm(norm_type='sync_batch', 
+                               num_groups=None, num_features=output_size)
+        self.relu_t = nn.ReLU()
+    def forward(self, x, mask):
+        #x B,T,D -> B, D, T
+        x = self.conv_t(x.transpose(1,2)).transpose(1,2) #B, D', T -> B, T, D'
+        x = self.bn_t(x, mask=mask)
+        x = self.relu_t(x)
+        return x, x
+
+
+class CNNEncoder(Encoder):
+    def __init__(self,
+        emb_size, 
+        hidden_size=512, 
+        pe=False,
+        num_layers=1,
+        masking_before='zero',
+        **kwargs):
+        super(CNNEncoder, self).__init__()
+        self._output_size = hidden_size
+        self.masking_before  = masking_before
+        if pe:
+            print('Turn on positional encoding')
+            self.pe = PositionalEncoding(emb_size)
+        else:
+            self.pe = None
+        self.layers = nn.ModuleList(
+            [
+                CNNEncoderLayer(
+                    input_size=emb_size if i==0 else hidden_size,
+                    output_size=hidden_size,
+                    **kwargs
+                )
+                for i in range(num_layers)
+            ]
+        )
+
+    def masking_before_cnn(self, embed_src, mask):
+        assert self.masking_before=='zero', 'only support zero masking now'
+        reshaped_mask = mask.transpose(1,2) # B, T, D
+        if self.masking_before=='zero':
+            masked = torch.zeros_like(embed_src)
+        else:
+            raise ValueError
+        masked_embed = torch.where(reshaped_mask, embed_src, masked)
+        return masked_embed
+
+    def forward(self, embed_src,
+                src_length,
+                mask):
+        embed_src = self.masking_before_cnn(embed_src, mask)
+        if self.pe:
+            x = self.pe(embed_src)
+        else:
+            x = embed_src
+        for layer in self.layers:
+            x = layer(x, mask)
+        return x
 
 class RecurrentEncoder(Encoder):
     """Encodes a sequence of word embeddings"""

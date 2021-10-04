@@ -187,8 +187,11 @@ class TransformerEncoderLayer(nn.Module):
         """
         super(TransformerEncoderLayer, self).__init__()
 
-        self.layer_norm = nn.LayerNorm(size, eps=1e-6)
-        self.src_src_att = MultiHeadedAttention(num_heads, size, dropout=dropout, output_attention=output_attention)
+        if num_heads>0:
+            self.layer_norm = nn.LayerNorm(size, eps=1e-6)
+            self.src_src_att = MultiHeadedAttention(num_heads, size, dropout=dropout, output_attention=output_attention)
+        else:
+            self.src_src_att = None
         self.feed_forward = PositionwiseFeedForward(
             input_size=size, ff_size=ff_size, dropout=dropout
         )
@@ -208,12 +211,15 @@ class TransformerEncoderLayer(nn.Module):
         :param mask: input mask
         :return: output tensor
         """
-        x_norm = self.layer_norm(x)
-        if self.output_attention:
-            h, attention = self.src_src_att(x_norm, x_norm, x_norm, mask)
+        if self.src_src_att:
+            x_norm = self.layer_norm(x)
+            if self.output_attention:
+                h, attention = self.src_src_att(x_norm, x_norm, x_norm, mask)
+            else:
+                h = self.src_src_att(x_norm, x_norm, x_norm, mask)
+            h = self.dropout(h) + x
         else:
-            h = self.src_src_att(x_norm, x_norm, x_norm, mask)
-        h = self.dropout(h) + x
+            h = x
         o = self.feed_forward(h)
         if self.output_attention:
             return o, attention
