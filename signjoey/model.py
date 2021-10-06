@@ -557,7 +557,7 @@ class Tokenizer_SignModel(nn.Module):
         sgn_mask: Tensor,
         sgn_lengths: Tensor,
     ) -> (Tensor):
-        sgn_feature = self.tokenizer(sgn_img)
+        sgn_feature = self.tokenizer(sgn_img, sgn_lengths)
         if self.tokenizer_type == 'cnn':
             #split and pad#
             assert torch.sum(
@@ -580,11 +580,15 @@ class Tokenizer_SignModel(nn.Module):
                 sgn.shape, sgn_mask.shape)
             assert sgn.shape[1] == sgn_mask.shape[2], (sgn.shape, sgn_mask.shape)
             return sgn, sgn_mask, sgn_lengths
-        elif self.tokenizer_type in ['s3d','s3ds','i3d']:
+        elif self.tokenizer_type in ['s3d','s3ds','i3d','bntin']:
             #Spatial average pooling and MASKING
             B, _, T_in, _, _ = sgn_img.shape
-            B, _, T_out, _, _ = sgn_feature.shape
-            pooled_sgn_feature = torch.mean(sgn_feature, dim=[3,4]) #B, D, T_out
+            if self.tokenizer_type=='bntin':
+                B, _, T_out = sgn_feature.shape
+                pooled_sgn_feature = sgn_feature #already pooled within bntin B, D, T
+            else:
+                B, _, T_out, _, _ = sgn_feature.shape
+                pooled_sgn_feature = torch.mean(sgn_feature, dim=[3,4]) #B, D, T_out
             sgn = torch.transpose(pooled_sgn_feature, 1, 2) #b, t_OUT, d
             sgn_mask = torch.zeros([B,1,T_out], dtype=torch.bool, device=sgn.device)
             valid_len_out = torch.floor(sgn_lengths*T_out/T_in).long() #B,
@@ -799,7 +803,7 @@ def build_model(
                         freeze_layer=cfg["cnn"].get("freeze_layer",0))
 
 
-        elif cfg["tokenizer"]["architecture"] in ['s3d','s3ds','i3d']:
+        elif cfg["tokenizer"]["architecture"] in ['s3d','s3ds','i3d','bntin']:
             tokenizer = backbone_3D(
                     network=cfg["tokenizer"]["architecture"], 
                     ckpt_dir=cfg["tokenizer"]["pretrained_ckpt"],

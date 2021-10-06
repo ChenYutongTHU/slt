@@ -27,7 +27,8 @@ pre_task = {
     's3d': 'coclr',
     's3dt': 'milnce',
     's3ds': 'actioncls',
-    'i3d': 'glosscls'
+    'i3d': 'glosscls',
+    'bntin': 'imagenet'
 }
 
 class ChannelSwap:
@@ -67,6 +68,15 @@ def get_data_transform(mode, dataset_info):
             A.ToTensor(),
             T.Stack(dim=1),
             T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225], channel=0),
+        ])
+        data_transform = transforms.Compose(ops)
+    elif dataset_info['model'] == 'bntin' and dataset_info['pretask'] == 'imagenet':
+        ops.extend([
+            A.ToTensor(), #0～1
+            T.Stack(dim=1),
+            T.Normalize(mean=[0.485, 0.456, 0.406], std=[
+                        0.229, 0.224, 0.225], channel=0),
+
         ])
         data_transform = transforms.Compose(ops)
     elif dataset_info['model'] == 's3dt' and dataset_info['pretask'] == 'milnce':
@@ -321,6 +331,20 @@ def get_premodel_weight(network, pretask, model_without_dp, model_path):
         state_dict = new_dict
         try: model_without_dp.load_state_dict(state_dict)
         except: neq_load_customized(model_without_dp, state_dict, verbose=True)
+    
+    elif network == 'bntin' and pretask == 'imagenet':
+        filename = os.path.join(model_path, 'googlenet-1378be20.pth')
+        checkpoint = torch.load(filename, map_location='cpu')
+        state_dict = checkpoint
+        new_dict = {}
+        for k, v in state_dict.items():
+            new_dict['backbone.'+k] = v
+        state_dict = new_dict
+        try:
+            model_without_dp.load_state_dict(state_dict)
+        except:
+            neq_load_customized(model_without_dp, state_dict, verbose=True)
+        print('Succesful load bntin_imagenet from {}'.format(filename))
     else:
         raise NotImplementedError
     return True

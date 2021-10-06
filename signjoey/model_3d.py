@@ -6,6 +6,7 @@ from models_3d.I3D.pytorch_i3d import InceptionI3d
 from models_3d.CoCLR.backbone.s3dg import S3D
 from models_3d.S3D.model import S3Dsup
 from models_3d.S3D_HowTo100M.s3dg import S3D as S3Dtup
+from models_3d.BNTIN import BN_TIN
 BLOCK2SIZE = {1:64, 2:192, 3:480, 4:832, 5:1024}
 
 class my_resnet50(torch.nn.Module):
@@ -140,6 +141,8 @@ def select_backbone(network, ckpt_dir=None, first_channel=3, use_block=5, freeze
     elif network == 'i3d':
         model = I3D(input_channel=first_channel, use_block=use_block,
                     freeze_block=freeze_block, stride=stride)
+    elif network == 'bntin':
+        model = BN_TIN()
     else: 
         raise NotImplementedError
 
@@ -159,17 +162,21 @@ class backbone_3D(torch.nn.Module):
     
     def set_train(self):
         self.train()
-        for m in self.backbone.frozen_modules:
+        for m in getattr(self.backbone,'frozen_modules',[]):
             m.eval()
 
     def set_frozen_layers(self):
-        for m in self.backbone.frozen_modules:
+        for m in getattr(self.backbone,'frozen_modules',[]):
             for param in m.parameters():
                 #print(param)
                 param.requires_grad = False
             m.eval()
 
-    def forward(self, block):
+    def forward(self, block, sgn_lengths=None):
         (B, C, T, H, W) = block.shape
-        feat3d = self.backbone(block)
+        #sgn_lengths is required in bntin
+        if self.network == 'bntin':
+            feat3d = self.backbone(block, sgn_lengths)
+        else:
+            feat3d = self.backbone(block)
         return feat3d

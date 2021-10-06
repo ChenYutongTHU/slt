@@ -203,7 +203,7 @@ def load_config(path="configs/default.yaml") -> dict:
                     use_layer,
                     LAYER2SIZE[use_layer]
                 ))
-        else:
+        elif cfg['model']['tokenizer']['architecture'] in ['i3d','s3d','s3ds']:
             use_block=cfg['model']["tokenizer"].get('use_block', 5)
             if cfg['data'].get('feature_size', 1024) != BLOCK2SIZE[use_block]:
                 cfg['data']['feature_size'] = BLOCK2SIZE[use_block]
@@ -212,6 +212,12 @@ def load_config(path="configs/default.yaml") -> dict:
                     use_block,
                     BLOCK2SIZE[use_block]
                 ))
+        elif cfg['model']['tokenizer']['architecture'] == 'bntin':
+            if cfg['data'].get('feature_size', 1024) != 512:
+                cfg['data']['feature_size'] = 512
+                print('tokenizer={}, Rewrite feature_size to {}'.format(
+                    cfg['model']['tokenizer']['architecture'],
+                    512))            
     else:
         name = cfg['data']['train']
         ind = name.find('block')
