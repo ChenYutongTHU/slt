@@ -300,7 +300,10 @@ def validate_on_data(
         else:# dict
             assert not do_translation
             for k, ao in all_gls_outputs.items():
-                results[k], valid_scores[k] = get_recognition_results(ao, {}, {})
+                seq = [seq for ti, seq in enumerate(
+                    data.sequence) if ti in split_indices]
+                results[k], valid_scores[k] = get_recognition_results(ao, 
+                    {'sequence': seq}, {})
             
 
     if do_translation:
@@ -350,6 +353,7 @@ def validate_on_data(
         results["decoded_txt"] = decoded_txt
         results["txt_ref"] = txt_ref
         results["txt_hyp"] = txt_hyp
+        results["sequence"] = [seq for ti, seq in enumerate(data.sequence) if ti in split_indices]
 
     if output_attention:
         assert int(os.environ['WORLD_SIZE'])==1, os.environ['WORLD_SIZE']
@@ -841,7 +845,7 @@ def test(
             )
             _write_to_file(
                 dev_gls_output_path_set,
-                [s for s in dev_data.sequence],
+                dev_best_recognition_result["sequence"],
                 dev_best_recognition_result["gls_hyp"],
             )
             test_gls_output_path_set = "{}.BW_{:03d}.{}.gls.rank{}".format(
@@ -849,7 +853,7 @@ def test(
             )
             _write_to_file(
                 test_gls_output_path_set,
-                [s for s in test_data.sequence],
+                test_best_result["sequence"],
                 test_best_result["gls_hyp"],
             )
 
@@ -881,12 +885,12 @@ def test(
 
             _write_to_file(
                 dev_txt_output_path_set,
-                [s for s in dev_data.sequence],
+                dev_best_translation_result["sequence"],
                 dev_best_translation_result["txt_hyp"],
             )
             _write_to_file(
                 test_txt_output_path_set,
-                [s for s in test_data.sequence],
+                test_best_result["sequence"],
                 test_best_result["txt_hyp"],
             )
 

@@ -945,21 +945,21 @@ class TrainManager:
                     # store validation set outputs and references
                     if self.do_recognition:
                         self._store_outputs(
-                            "dev.hyp.gls.rank{}".format(os.environ['LOCAL_RANK']), valid_seq, val_res["gls_hyp"], "gls"
+                            "dev.hyp.gls.rank{}".format(os.environ['LOCAL_RANK']), val_res["sequence"], val_res["gls_hyp"], "gls"
                         )
                         self._store_outputs(
                             "references.dev.gls.rank{}".format(os.environ['LOCAL_RANK']), 
-                            valid_seq, val_res["gls_ref"]
+                            val_res["sequence"], val_res["gls_ref"]
                         )
 
                     if self.do_translation:
                             self._store_outputs(
                                 "dev.hyp.txt.rank{}".format(os.environ['LOCAL_RANK']),
-                                 valid_seq, val_res["txt_hyp"], "txt"
+                                val_res["sequence"], val_res["txt_hyp"], "txt"
                             )
                             self._store_outputs(
                                 "references.dev.txt.rank{}".format(os.environ['LOCAL_RANK']), 
-                                valid_seq, val_res["txt_ref"]
+                                val_res["sequence"], val_res["txt_ref"]
                             )
                     
 
