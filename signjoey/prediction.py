@@ -579,6 +579,8 @@ def test(
         logger.info("-" * 60)
         valid_start_time = time.time()
         logger.info("[DEV] partition [RECOGNITION] experiment [BW]: {}".format(recognition_beam_sizes))
+        #!!
+        model.module.do_translation = False
         dev_recognition_results = validate_on_data(
             model=model,
             data=dev_data,
@@ -609,6 +611,7 @@ def test(
             use_amp = cfg["training"].get('use_amp',False),
             output_attention=(mode=='visualize_attention')
         ) #return {'}
+        model.module.do_translation = do_translation
         logger.info("finished in %.4fs ", time.time() - valid_start_time)
         for rbw in recognition_beam_sizes:
             if dev_recognition_results[rbw]["valid_scores_gathered"]["wer"] < dev_best_wer_score:

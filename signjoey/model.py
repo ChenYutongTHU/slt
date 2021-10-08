@@ -701,7 +701,7 @@ def build_model(
             == cfg["encoder"]["hidden_size"]
         ), "for transformer, emb_size must be hidden_size"
         encoder = TransformerEncoder(
-            **cfg["encoder"], #default pe=True, output_attention=False
+            **cfg["encoder"], #default pe=True, output_attention=False, fc_type='linear', kernel_size=1
             emb_size=sgn_embed.embedding_dim,
             emb_dropout=enc_emb_dropout,
         )

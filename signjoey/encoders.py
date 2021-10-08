@@ -280,7 +280,9 @@ class TransformerEncoder(Encoder):
                     ff_size=ff_size,
                     num_heads=num_heads,
                     dropout=dropout,
-                    output_attention=output_attention
+                    output_attention=output_attention,
+                    fc_type=kwargs.get('fc_type', 'linear'),
+                    kernel_size=kwargs.get('kernel_size', 1)
                 )
                 for _ in range(num_layers)
             ]

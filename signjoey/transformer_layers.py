@@ -101,7 +101,7 @@ class PositionwiseFeedForward(nn.Module):
     Projects to ff_size and then back down to input_size.
     """
 
-    def __init__(self, input_size, ff_size, dropout=0.1):
+    def __init__(self, input_size, ff_size, dropout=0.1, fc_type='linear', kernel_size=1):
         """
         Initializes position-wise feed-forward layer.
         :param input_size: dimensionality of the input.
@@ -110,17 +110,39 @@ class PositionwiseFeedForward(nn.Module):
         """
         super(PositionwiseFeedForward, self).__init__()
         self.layer_norm = nn.LayerNorm(input_size, eps=1e-6)
+        self.fc_type = fc_type
+        self.kernel_size = kernel_size
+        if fc_type=='linear':
+            fc_1 = nn.Linear(input_size, ff_size)
+            fc_2 = nn.Linear(ff_size, input_size)
+        elif fc_type=='cnn':
+            fc_1 = nn.Conv1d(input_size, ff_size, kernel_size=kernel_size, stride=1, padding='same')
+            fc_2 = nn.Conv1d(ff_size, input_size, kernel_size=kernel_size, stride=1, padding='same')
+        else:
+            raise ValueError
         self.pwff_layer = nn.Sequential(
-            nn.Linear(input_size, ff_size),
+            fc_1,
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(ff_size, input_size),
+            fc_2,
             nn.Dropout(dropout),
         )
 
     def forward(self, x):
         x_norm = self.layer_norm(x)
-        return self.pwff_layer(x_norm) + x
+        if self.fc_type == 'linear':
+            return self.pwff_layer(x_norm) + x
+        elif self.fc_type == 'cnn':
+            #x_norm B,T,D ->B,D,T
+            print(x_norm.shape)
+            x_t = x_norm.transpose(1,2)
+            print(x_t.shape)
+            x_t = self.pwff_layer(x_t)
+            print(x_t.shape)
+            input()
+            return x_t.transpose(1,2)+x
+        else:
+            raise ValueError
 
 
 # pylint: disable=arguments-differ
@@ -176,7 +198,8 @@ class TransformerEncoderLayer(nn.Module):
 
     def __init__(
         self, size: int = 0, ff_size: int = 0, num_heads: int = 0, dropout: float = 0.1,
-        output_attention: bool=False
+        output_attention: bool=False,
+        fc_type: str='linear', kernel_size=1
     ):
         """
         A single Transformer layer.
@@ -193,7 +216,8 @@ class TransformerEncoderLayer(nn.Module):
         else:
             self.src_src_att = None
         self.feed_forward = PositionwiseFeedForward(
-            input_size=size, ff_size=ff_size, dropout=dropout
+            input_size=size, ff_size=ff_size, dropout=dropout,
+            fc_type=fc_type, kernel_size=kernel_size
         )
         self.dropout = nn.Dropout(dropout)
         self.size = size
