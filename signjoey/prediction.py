@@ -244,7 +244,7 @@ def validate_on_data(
                             [bp[sri] for sri in sort_reverse_index]
                         )
             if do_translation:
-                all_txt_outputs.extend(batch_txt_predictions[sort_reverse_index].cpu())
+                all_txt_outputs.extend(batch_txt_predictions[sort_reverse_index])
             all_attention_scores.extend(
                 batch_attention_scores[sort_reverse_index].cpu()
                 if batch_attention_scores is not None
@@ -294,14 +294,14 @@ def validate_on_data(
             results["gls_ref"] = gls_ref
             results["gls_hyp"] = gls_hyp
             return results, valid_scores
-
+        seq = [seq for ti, seq in enumerate(
+            data.sequence) if ti in split_indices]
         if type(all_gls_outputs)==list:
             results, valid_scores = get_recognition_results(all_gls_outputs, results, valid_scores)
+            results['sequence'] = seq
         else:# dict
             assert not do_translation
             for k, ao in all_gls_outputs.items():
-                seq = [seq for ti, seq in enumerate(
-                    data.sequence) if ti in split_indices]
                 results[k], valid_scores[k] = get_recognition_results(ao, 
                     {'sequence': seq}, {})
             
@@ -318,7 +318,7 @@ def validate_on_data(
             # total validation translation loss
             valid_translation_loss = total_translation_loss
             # exponent of token-level negative log prob
-            valid_ppl = torch.exp(total_translation_loss / total_num_txt_tokens)
+            valid_ppl = np.exp(total_translation_loss / total_num_txt_tokens)
         else:
             valid_translation_loss = -1
             valid_ppl = -1
@@ -370,7 +370,7 @@ def validate_on_data(
 
     if do_translation:
         # not strictly corpus-level bleu
-        for k,v in results['valid_scores'].items():
+        for k,v in valid_scores.items():
             if 'wer' in k:
                 continue
             if k != 'num_seq':

@@ -199,7 +199,7 @@ class SignModel(nn.Module):
         self.do_recognition = do_recognition
         self.do_translation = do_translation
     
-    def set_train(self):
+    def set_train(self, verbose=False):
         self.train()
     
     def set_eval(self):
