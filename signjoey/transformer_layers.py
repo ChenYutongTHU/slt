@@ -134,12 +134,8 @@ class PositionwiseFeedForward(nn.Module):
             return self.pwff_layer(x_norm) + x
         elif self.fc_type == 'cnn':
             #x_norm B,T,D ->B,D,T
-            print(x_norm.shape)
             x_t = x_norm.transpose(1,2)
-            print(x_t.shape)
             x_t = self.pwff_layer(x_t)
-            print(x_t.shape)
-            input()
             return x_t.transpose(1,2)+x
         else:
             raise ValueError

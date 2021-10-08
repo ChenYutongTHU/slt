@@ -809,7 +809,7 @@ def build_model(
                     ckpt_dir=cfg["tokenizer"]["pretrained_ckpt"],
                     use_block=cfg["tokenizer"].get('use_block', 5),
                     freeze_block=cfg['tokenizer'].get('freeze_block', 0),
-                    stride=cfg['tokenizer'].get('block45_stride', 2))
+                    stride=cfg['tokenizer'].get('block5_stride', 2))
             
             network = cfg["tokenizer"]["architecture"]
             if cfg["tokenizer"].get('pretask','default')=='default':

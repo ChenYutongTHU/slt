@@ -27,7 +27,7 @@ class S3Dsup(nn.Module):
         if use_block>=4:
             base_seq += [
                 nn.MaxPool3d(kernel_size=(3, 3, 3), stride=(
-                    stride, 2, 2), padding=(1, 1, 1)),  # 7
+                    2, 2, 2), padding=(1, 1, 1)),  # 7
                 Mixed_4b(),  # 8
                 Mixed_4c(),  # 9
                 Mixed_4d(),  # 10
@@ -37,7 +37,7 @@ class S3Dsup(nn.Module):
         if use_block>=5:
             base_seq += [
                 nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(
-                    stride, 2, 2), padding=(0, 0, 0)),
+                    stride, 2, 2), padding=(0 if stride==2 else 1, 0, 0)),
                 Mixed_5b(),
                 Mixed_5c(), #15
             ]
