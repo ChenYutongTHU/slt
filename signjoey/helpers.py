@@ -50,11 +50,13 @@ def make_model_dir(model_dir: str, overwrite: bool = False) -> str:
     :return: path to model directory
     """
     if os.path.isdir(model_dir):
-        if not overwrite:
-            raise FileExistsError("Model directory exists and overwriting is disabled.")
+        # if not overwrite:
+        #     raise FileExistsError("Model directory exists and overwriting is disabled.")
         # delete previous directory to start with empty dir again
-        shutil.rmtree(model_dir)
-    os.makedirs(model_dir)
+        if overwrite:
+            print("overwrite previous model_dir={}".format(model_dir))
+            shutil.rmtree(model_dir)
+    os.makedirs(model_dir, exist_ok=True)
     return model_dir
 
 

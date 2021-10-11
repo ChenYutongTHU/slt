@@ -42,18 +42,19 @@ class NullEncoder(Encoder):
             return embed_src, embed_src
 class CNNEncoderLayer(nn.Module):
     def __init__(self,
-                 input_size, output_size, kernel_size=5, stride=1, padding=0):
+                 input_size, output_size, kernel_size=5, stride=1, padding=0,
+                 norm_type='sync_batch'):
         assert stride==1, 'only support stride=1 now otherwise mask should be adjusted'
         super(CNNEncoderLayer, self).__init__()
         self.conv_t = nn.Conv1d(input_size, output_size, kernel_size=kernel_size, 
             stride=stride, padding='same', bias=False)
-        self.bn_t = MaskedNorm(norm_type='sync_batch', 
+        self.norm_t = MaskedNorm(norm_type=norm_type, 
                                num_groups=None, num_features=output_size)
         self.relu_t = nn.ReLU()
     def forward(self, x, mask):
         #x B,T,D -> B, D, T
         x = self.conv_t(x.transpose(1,2)).transpose(1,2) #B, D', T -> B, T, D'
-        x = self.bn_t(x, mask=mask)
+        x = self.norm_t(x, mask=mask)
         x = self.relu_t(x)
         return x, x
 
@@ -73,6 +74,7 @@ class CNNEncoder(Encoder):
             print('Turn on positional encoding')
             self.pe = PositionalEncoding(emb_size)
         else:
+            print('Turn off positional encoding')
             self.pe = None
         self.layers = nn.ModuleList(
             [
@@ -104,8 +106,8 @@ class CNNEncoder(Encoder):
         else:
             x = embed_src
         for layer in self.layers:
-            x = layer(x, mask)
-        return x
+            x,_ = layer(x, mask)
+        return x,x
 
 class RecurrentEncoder(Encoder):
     """Encodes a sequence of word embeddings"""

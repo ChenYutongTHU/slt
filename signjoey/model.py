@@ -443,7 +443,7 @@ class SignModel(nn.Module):
         else:
             decoded_gloss_sequences = None
 
-        if self.do_translation:
+        if self.do_translation and translation_beam_size:
             # greedy decoding
             if translation_beam_size < 2:
                 stacked_txt_output, stacked_attention_scores = greedy(

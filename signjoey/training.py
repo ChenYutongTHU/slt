@@ -222,6 +222,27 @@ class TrainManager:
 
         if self.use_cuda:
             self.model.cuda()
+
+        # initialize training statistics
+        self.steps = 0
+        self.noimprove_delta = (self.train_config.get(
+            "patience", 10)+1)*self.validation_freq
+        self.last_update_steps = -self.noimprove_delta+1 #prevent stop training at th very beginning
+        # stop training if this flag is True by reaching learning rate minimum
+        self.stop = False
+        self.total_txt_tokens = 0
+        self.total_gls_tokens = 0
+        self.best_ckpt_iteration = 0
+        # initial values for best scores
+        self.best_ckpt_score = np.inf if self.minimize_metric else -np.inf
+        self.best_all_ckpt_scores = {}
+        # comparison function for scores
+        self.is_best = (
+            lambda score: score < self.best_ckpt_score
+            if self.minimize_metric
+            else score > self.best_ckpt_score
+        )
+
         # model parameters
         if "load_model" in train_config.keys():
             model_load_path = train_config["load_model"]
@@ -235,6 +256,8 @@ class TrainManager:
                 reset_scheduler=reset_scheduler,
                 reset_optimizer=reset_optimizer
             )
+            #also load self.steps, total_txt/gls_tokens, best_ckpt_score, best_all_ckpt_scores
+
         reset_running_stats = train_config.get("reset_running_stats", False)
         if reset_running_stats:
             def bn_reset_running_stats(m):
@@ -280,26 +303,6 @@ class TrainManager:
                     m.bn_name = name
                     m.register_forward_pre_hook(compute_bn_stats)           
 
-
-        # initialize training statistics
-        self.steps = 0
-        self.noimprove_delta = (self.train_config.get(
-            "patience", 10)+1)*self.validation_freq
-        self.last_update_steps = -self.noimprove_delta+1 #prevent stop training at th very beginning
-        # stop training if this flag is True by reaching learning rate minimum
-        self.stop = False
-        self.total_txt_tokens = 0
-        self.total_gls_tokens = 0
-        self.best_ckpt_iteration = 0
-        # initial values for best scores
-        self.best_ckpt_score = np.inf if self.minimize_metric else -np.inf
-        self.best_all_ckpt_scores = {}
-        # comparison function for scores
-        self.is_best = (
-            lambda score: score < self.best_ckpt_score
-            if self.minimize_metric
-            else score > self.best_ckpt_score
-        )
 
 
     def _get_recognition_params(self, train_config) -> None:
@@ -430,7 +433,6 @@ class TrainManager:
                 map_location = 'cuda'
         
         model_checkpoint = load_checkpoint(path=path, map_location=map_location)
-
         # restore model and optimizer parameters
         try:
             self.model.load_state_dict(model_checkpoint["model_state"])
@@ -455,9 +457,10 @@ class TrainManager:
             self.logger.info("Reset scheduler.")
 
         # restore counts
-        self.steps = model_checkpoint["steps"]
-        self.total_txt_tokens = model_checkpoint["total_txt_tokens"]
-        self.total_gls_tokens = model_checkpoint["total_gls_tokens"]
+        if self.train_config["preemptible"]:
+            self.steps = model_checkpoint["steps"]
+            self.total_txt_tokens = model_checkpoint["total_txt_tokens"]
+            self.total_gls_tokens = model_checkpoint["total_gls_tokens"]
 
         if not reset_best_ckpt:
             self.best_ckpt_score = model_checkpoint["best_ckpt_score"]
@@ -510,7 +513,11 @@ class TrainManager:
         )
 
         epoch_no = None
-        for epoch_no in range(self.epochs):
+        if self.train_config["preemptible"] and self.steps!=0:
+            self.start_epoch = self.steps//len(train_iter)
+        else:
+            self.start_epoch = 0
+        for epoch_no in range(self.start_epoch, self.epochs):
             if distributed:
                 train_sampler.set_epoch(epoch_no)
                 
@@ -1251,13 +1258,26 @@ class TrainManager:
                 opened_file.write("{}|{}\n".format(seq, hyp))
 
 
-def train(cfg_file: str) -> None:
+def train(cfg_file: str, preemptible: bool=False) -> None:
     """
     Main training function. After training, also test on test data if given.
 
     :param cfg_file: path to configuration yaml file
     """
     cfg = load_config(cfg_file)
+    if preemptible:
+        resume_ckpt = os.path.join(cfg["training"]["model_dir"],'best.ckpt')
+        if os.path.isfile(resume_ckpt):
+            print('Found saved checkpoint {}'.format(resume_ckpt))
+            print('Preemptible=True set overwrite = False')
+            cfg["training"]["overwrite"] = False
+            cfg["training"]["load_model"] = resume_ckpt
+            cfg["training"]["reset_best_ckpt"] = False
+            cfg["training"]["reset_scheduler"] = False
+            cfg["training"]["reset_optimizer"] = False
+        cfg["training"]["preemptible"] = True
+    else:
+        cfg["training"]["preemptible"] = False
     input_data = cfg["data"].get('input_data', 'feature')
     # set the random seed
     set_seed(seed=cfg["training"].get("random_seed", 42))
@@ -1390,7 +1410,14 @@ if __name__ == "__main__":
         type=str,
         help="Training configuration file (yaml).",
     )
+    parser.add_argument(
+        "--preemptible",
+        default=0,
+        type=int,
+        help='0 non-preemptible, 1 pre-emptible'
+    )
     args = parser.parse_args()
     assert 'LOCAL_RANK' in os.environ, 'Only support distributed training now!'
-    train(cfg_file=args.config)
+    args.preemptible = bool(args.preemptible)
+    train(cfg_file=args.config, preemptible=args.preemptible)
 
