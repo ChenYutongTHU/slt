@@ -227,6 +227,7 @@ class Batch_from_examples(Batch):
         self.max_num_frames = max_num_frames
         self.tokenizer_type = tokenizer_type
         self.downsample = downsample
+
         if input_data == 'feature':
             self.sgn, self.sgn_lengths = torch_batch.sgn
             # Here be dragons
@@ -329,12 +330,15 @@ class Batch_from_examples(Batch):
                 dat_max = data_cfg['temporal_augmentation'].get('max', 1)
             assert os.path.isdir(img_path), (img_path)
             for idx, name in enumerate(self.sequence):
+                num_tokens = torch_batch.gls[0][idx].shape[0]
                 seq_folder = os.path.join(img_path, name)
                 assert os.path.isdir(seq_folder), seq_folder
                 image_path_list = [os.path.join(seq_folder, ss) for ss in sorted(
                     os.listdir(seq_folder)) if ss[-4:] == '.png']
                 selected_indexs, valid_len = self.get_selected_indexs(
-                    len(image_path_list), tmin=dat_min, tmax=dat_max)
+                    len(image_path_list), tmin=dat_min, tmax=dat_max,
+                    level=data_cfg['temporal_augmentation'].get('level','sentence'),
+                    num_tokens=num_tokens)
                 self.sgn_lengths.append(valid_len)  # l0,l1,l2,l3,l4
                 frame_seq = self.load_frames(image_path_list, selected_indexs)
                 if self.transform is not None: frame_seq = self.transform(frame_seq) #c,t,h,w
@@ -348,7 +352,6 @@ class Batch_from_examples(Batch):
             self.sgn_mask = None
             self.sgn_lengths = torch.tensor(
                 self.sgn_lengths, dtype=torch.long)  # B,
-
 
         # Text
         self.txt = None
@@ -381,10 +384,12 @@ class Batch_from_examples(Batch):
             self.gls, self.gls_lengths = torch_batch.gls
             self.num_gls_tokens = self.gls_lengths.sum().detach().clone().numpy()
 
+
         # if use_cuda:
         #     self._make_cuda()
 
-    def get_selected_indexs(self, vlen, tmin=1, tmax=1):
+    def get_selected_indexs(self, vlen, tmin=1, tmax=1, level='sequence', num_tokens=1):
+        #num_tokens is ignored when level is set as 'sequence'
         if tmin==1 and tmax==1:
             #output deterministic results
             if vlen <= self.max_num_frames:
@@ -399,27 +404,59 @@ class Batch_from_examples(Batch):
 
             assert len(frame_index) == valid_len, (frame_index, valid_len)
             return frame_index, valid_len
-            
-        min_len = int(tmin*vlen)
-        max_len = min(self.max_num_frames, int(tmax*vlen))
-        selected_len = np.random.randint(min_len, max_len+1)
-        if selected_len<=vlen: #speed up
-            selected_index = sorted(np.random.permutation(np.arange(vlen))[:selected_len])
-        else: #slow down boring video we need to copy some frames
-            copied_index = np.random.randint(0,vlen,selected_len-vlen)
-            selected_index = sorted(np.concatenate([np.arange(vlen), copied_index]))
+        
+        if level=='sentence' or vlen<=num_tokens:
+            min_len = int(tmin*vlen)
+            max_len = min(self.max_num_frames, int(tmax*vlen))
+            selected_len = np.random.randint(min_len, max_len+1)
+            if selected_len<=vlen: #speed up
+                selected_index = sorted(np.random.permutation(np.arange(vlen))[:selected_len])
+            else: #slow down boring video we need to copy some frames
+                copied_index = np.random.randint(0,vlen,selected_len-vlen)
+                selected_index = sorted(np.concatenate([np.arange(vlen), copied_index]))
 
-        if selected_len <= self.max_num_frames:
-            frame_index = selected_index
-            valid_len = selected_len
+            if selected_len <= self.max_num_frames:
+                frame_index = selected_index
+                valid_len = selected_len
+            else:
+                assert False, (vlen, selected_len, min_len, max_len)
+                sequence = np.arange(vlen)
+                an = (vlen - self.max_num_frames)//2
+                en = vlen - self.max_num_frames - an
+                frame_index = sequence[an: -en]
+                valid_len = self.max_num_frames
+        elif level=='token':
+            frame_index = []
+            frames_per_token = vlen//num_tokens
+            valid_len = 0
+            #print('num_tokens ', num_tokens, 'num_frames ', vlen)
+            for i in range(num_tokens):
+                s, t = frames_per_token*i, frames_per_token*(i+1)
+                if i==num_tokens-1:
+                    t = vlen
+                token_vlen = t-s
+                #print('token ',i, s,t)
+                min_len = int(token_vlen*tmin)
+                max_len = int(token_vlen*tmax)
+                selected_len = np.random.randint(min_len, max_len+1)
+                if selected_len <= token_vlen: #speed up
+                    selected_index = sorted(np.random.permutation(np.arange(token_vlen))[:selected_len])
+                else:
+                    copied_index = np.random.randint(0,token_vlen,selected_len-token_vlen)
+                    selected_index = sorted(np.concatenate([np.arange(token_vlen), copied_index])) 
+                selected_index = np.array(selected_index)+s   
+                #print('select  ', selected_index)
+                valid_len += selected_len
+                frame_index.append(selected_index)    
+            frame_index = np.concatenate(frame_index, axis=0)
+            #print('finally selected ', frame_index)
+            if valid_len>self.max_num_frames:
+                #randomly drop some frames
+                selected_index = sorted(np.random.permutation(selected_index)[:self.max_num_frames])
+                valid_len = self.max_num_frames
+
         else:
-            assert False, (vlen, selected_len, min_len, max_len)
-            sequence = np.arange(vlen)
-            an = (vlen - self.max_num_frames)//2
-            en = vlen - self.max_num_frames - an
-            frame_index = sequence[an: -en]
-            valid_len = self.max_num_frames
-
+            raise ValueError
         assert len(frame_index) == valid_len, (frame_index, valid_len)
         return frame_index, valid_len
 
