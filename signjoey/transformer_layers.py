@@ -101,7 +101,9 @@ class PositionwiseFeedForward(nn.Module):
     Projects to ff_size and then back down to input_size.
     """
 
-    def __init__(self, input_size, ff_size, dropout=0.1, fc_type='linear', kernel_size=1):
+    def __init__(self, input_size, ff_size, dropout=0.1, 
+        fc_type='linear', kernel_size=1,
+        skip_connection=True):
         """
         Initializes position-wise feed-forward layer.
         :param input_size: dimensionality of the input.
@@ -127,16 +129,25 @@ class PositionwiseFeedForward(nn.Module):
             fc_2,
             nn.Dropout(dropout),
         )
+        self.skip_connection=skip_connection
+        if not skip_connection:
+            print('Turn off skip_connection in PositionwiseFeedForward')
 
     def forward(self, x):
         x_norm = self.layer_norm(x)
         if self.fc_type == 'linear':
-            return self.pwff_layer(x_norm) + x
+            if self.skip_connection:
+                return self.pwff_layer(x_norm) + x
+            else:
+                return self.pwff_layer(x_norm)
         elif self.fc_type == 'cnn':
             #x_norm B,T,D ->B,D,T
             x_t = x_norm.transpose(1,2)
             x_t = self.pwff_layer(x_t)
-            return x_t.transpose(1,2)+x
+            if self.skip_connection:
+                return x_t.transpose(1,2)+x
+            else:
+                return x_t.transpose(1,2)
         else:
             raise ValueError
 
@@ -195,7 +206,8 @@ class TransformerEncoderLayer(nn.Module):
     def __init__(
         self, size: int = 0, ff_size: int = 0, num_heads: int = 0, dropout: float = 0.1,
         output_attention: bool=False,
-        fc_type: str='linear', kernel_size=1
+        fc_type: str='linear', kernel_size=1,
+        skip_connection: bool=True
     ):
         """
         A single Transformer layer.
@@ -213,11 +225,15 @@ class TransformerEncoderLayer(nn.Module):
             self.src_src_att = None
         self.feed_forward = PositionwiseFeedForward(
             input_size=size, ff_size=ff_size, dropout=dropout,
-            fc_type=fc_type, kernel_size=kernel_size
+            fc_type=fc_type, kernel_size=kernel_size,
+            skip_connection=skip_connection
         )
         self.dropout = nn.Dropout(dropout)
         self.size = size
         self.output_attention = output_attention
+        self.skip_connection = skip_connection
+        if not self.skip_connection:
+            print('Turn off skip connection in transformer Encoder layer!')
 
     # pylint: disable=arguments-differ
     def forward(self, x: Tensor, mask: Tensor) -> Tensor:
@@ -237,7 +253,10 @@ class TransformerEncoderLayer(nn.Module):
                 h, attention = self.src_src_att(x_norm, x_norm, x_norm, mask)
             else:
                 h = self.src_src_att(x_norm, x_norm, x_norm, mask)
-            h = self.dropout(h) + x
+            if self.skip_connection:
+                h = self.dropout(h) + x
+            else:
+                h = self.dropout(h)
         else:
             h = x
         o = self.feed_forward(h)

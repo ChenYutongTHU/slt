@@ -43,7 +43,8 @@ class NullEncoder(Encoder):
 class CNNEncoderLayer(nn.Module):
     def __init__(self,
                  input_size, output_size, kernel_size=5, stride=1, padding=0,
-                 norm_type='sync_batch'):
+                 norm_type='sync_batch',
+                 dropout=0):
         assert stride==1, 'only support stride=1 now otherwise mask should be adjusted'
         super(CNNEncoderLayer, self).__init__()
         self.conv_t = nn.Conv1d(input_size, output_size, kernel_size=kernel_size, 
@@ -51,11 +52,14 @@ class CNNEncoderLayer(nn.Module):
         self.norm_t = MaskedNorm(norm_type=norm_type, 
                                num_groups=None, num_features=output_size)
         self.relu_t = nn.ReLU()
+        print('set dropout rate to {}'.format(dropout))
+        self.dropout = nn.Dropout(dropout)
     def forward(self, x, mask):
         #x B,T,D -> B, D, T
         x = self.conv_t(x.transpose(1,2)).transpose(1,2) #B, D', T -> B, T, D'
         x = self.norm_t(x, mask=mask)
         x = self.relu_t(x)
+        x = self.dropout(x)
         return x, x
 
 
@@ -66,6 +70,7 @@ class CNNEncoder(Encoder):
         pe=False,
         num_layers=1,
         masking_before='zero',
+        LN=False,
         **kwargs):
         super(CNNEncoder, self).__init__()
         self._output_size = hidden_size
@@ -86,6 +91,20 @@ class CNNEncoder(Encoder):
                 for i in range(num_layers)
             ]
         )
+        self.LN = LN
+        if self.LN:
+            print('Turn on FC + LN at the end of CNN encoder')
+            self.head_fc = nn.Linear(hidden_size, hidden_size)
+            print('dropout rate betwen FC and LN = {}'.format(kwargs.get('dropout',0)))
+            self.dropout = nn.Dropout(kwargs.get('dropout',0))
+            self.head_ln = nn.LayerNorm(hidden_size)
+            self.head = nn.Sequential(
+                self.head_fc,
+                self.dropout,
+                self.head_ln
+            )
+        else:
+            self.head = nn.Identity()
 
     def masking_before_cnn(self, embed_src, mask):
         assert self.masking_before=='zero', 'only support zero masking now'
@@ -107,6 +126,7 @@ class CNNEncoder(Encoder):
             x = embed_src
         for layer in self.layers:
             x,_ = layer(x, mask)
+        x = self.head(x)
         return x,x
 
 class RecurrentEncoder(Encoder):
@@ -258,6 +278,8 @@ class TransformerEncoder(Encoder):
         freeze: bool = False,
         pe: bool = True,
         output_attention: bool = False,
+        LN: bool = True,
+        skip_connection: bool=True,
         **kwargs
     ):
         """
@@ -284,13 +306,18 @@ class TransformerEncoder(Encoder):
                     dropout=dropout,
                     output_attention=output_attention,
                     fc_type=kwargs.get('fc_type', 'linear'),
-                    kernel_size=kwargs.get('kernel_size', 1)
+                    kernel_size=kwargs.get('kernel_size', 1),
+                    skip_connection=skip_connection
                 )
                 for _ in range(num_layers)
             ]
         )
         self.output_attention = output_attention
-        self.layer_norm = nn.LayerNorm(hidden_size, eps=1e-6)
+        if LN:
+            self.layer_norm = nn.LayerNorm(hidden_size, eps=1e-6)
+        else:
+            print('Turn off layer norm at the last of encoder')
+            self.layer_norm = nn.Identity()
         if pe:
             self.pe = PositionalEncoding(hidden_size)
         else:

@@ -452,7 +452,7 @@ class Batch_from_examples(Batch):
             #print('finally selected ', frame_index)
             if valid_len>self.max_num_frames:
                 #randomly drop some frames
-                selected_index = sorted(np.random.permutation(selected_index)[:self.max_num_frames])
+                frame_index = sorted(np.random.permutation(frame_index)[:self.max_num_frames])
                 valid_len = self.max_num_frames
 
         else:

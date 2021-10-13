@@ -694,7 +694,7 @@ def build_model(
 
     # build encoder
     enc_dropout = cfg["encoder"].get("dropout", 0.0)
-    enc_emb_dropout = cfg["encoder"]["embeddings"].get("dropout", enc_dropout)
+    enc_emb_dropout = cfg["encoder"]["embeddings"].get("dropout", 0.1)
     if cfg["encoder"].get("type", "recurrent") == "transformer":
         assert (
             cfg["encoder"]["embeddings"]["embedding_dim"]
@@ -718,7 +718,8 @@ def build_model(
             hidden_size=cfg["encoder"].get("hidden_size", 512),
             num_layers=cfg["encoder"].get("num_layers", 1),
             masking_before=cfg["encoder"].get("masking_before",'zero'),
-            **cfg["encoder"]["cnn"]
+            LN=cfg["encoder"].get("LN", False),
+            **cfg["encoder"]["cnn"] #dropout
         )
     else:
         encoder = RecurrentEncoder(
