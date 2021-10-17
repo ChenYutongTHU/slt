@@ -57,7 +57,7 @@ def get_loss_for_batch(
 
     # Do a forward pass
     if input_data=='feature':
-        decoder_outputs, gloss_probabilities, attention = model(
+        decoder_outputs, gloss_probabilities, attention, encoder_outputs = model(
             sgn=batch.sgn,
             sgn_mask=batch.sgn_mask,
             sgn_lengths=batch.sgn_lengths,
@@ -65,7 +65,7 @@ def get_loss_for_batch(
             txt_mask=batch.txt_mask,
             )
     else:
-        (decoder_outputs, gloss_probabilities, attention), batch.sgn, batch.sgn_mask, batch.sgn_lengths = model(
+        (decoder_outputs, gloss_probabilities, attention, encoder_outputs), batch.sgn, batch.sgn_mask, batch.sgn_lengths = model(
             sgn_img=batch.sgn_img,
             sgn_mask=batch.sgn_mask,
             sgn_lengths=batch.sgn_lengths,
@@ -104,7 +104,7 @@ def get_loss_for_batch(
         translation_loss = None
 
 
-    return recognition_loss, translation_loss, attention
+    return recognition_loss, translation_loss, attention, encoder_outputs
 
 
 class CNN(torch.nn.Module):
@@ -257,7 +257,7 @@ class SignModel(nn.Module):
         else:
             decoder_outputs = None
 
-        return decoder_outputs, gloss_probabilities, attention
+        return decoder_outputs, gloss_probabilities, attention, encoder_output
 
     def encode(
         self, sgn: Tensor, sgn_mask: Tensor, sgn_length: Tensor
@@ -373,7 +373,8 @@ class SignModel(nn.Module):
         recognition_beam_size: int = 1,
         translation_beam_size: int = 1,
         translation_beam_alpha: float = -1,
-        translation_max_output_length: int = 100
+        translation_max_output_length: int = 100,
+        output_gloss_prob: bool = False
     ) -> (np.array, np.array, np.array):
         """
         Get outputs and attentions scores for a given batch
@@ -402,9 +403,9 @@ class SignModel(nn.Module):
             # N x T x C
             gloss_scores = self.gloss_output_layer(encoder_output)
             # N x T x C
-            gloss_probabilities = gloss_scores.log_softmax(2)
+            gloss_probabilities_0 = gloss_scores.log_softmax(2)
             # Turn it into T x N x C
-            gloss_probabilities = gloss_probabilities.permute(1, 0, 2)
+            gloss_probabilities = gloss_probabilities_0.permute(1, 0, 2) #
             gloss_probabilities = gloss_probabilities.cpu().detach().numpy()
             tf_gloss_probabilities = np.concatenate(
                 (gloss_probabilities[:, :, 1:], gloss_probabilities[:, :, 0, None]),
@@ -473,8 +474,11 @@ class SignModel(nn.Module):
                 )
         else:
             stacked_txt_output = stacked_attention_scores = None
-
-        return decoded_gloss_sequences, stacked_txt_output, stacked_attention_scores
+        if output_gloss_prob:
+            assert self.do_recognition
+            return decoded_gloss_sequences, stacked_txt_output, stacked_attention_scores, gloss_probabilities_0.cpu().numpy()
+        else:
+            return decoded_gloss_sequences, stacked_txt_output, stacked_attention_scores, None
 
     def __repr__(self) -> str:
         """
@@ -701,12 +705,11 @@ def build_model(
             == cfg["encoder"]["hidden_size"]
         ), "for transformer, emb_size must be hidden_size"
         encoder = TransformerEncoder(
-            **cfg["encoder"], #default pe=True, output_attention=False, fc_type='linear', kernel_size=1
+            **cfg["encoder"], #default pe=True, fc_type='linear', kernel_size=1
             emb_size=sgn_embed.embedding_dim,
             emb_dropout=enc_emb_dropout,
         )
     elif cfg["encoder"].get("type", "recurrent") == "empty":
-        assert not do_translation
         encoder = NullEncoder( 
             emb_size=sgn_embed.embedding_dim, #default pe=Fals
             pe=cfg["encoder"].get("pe",False)

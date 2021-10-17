@@ -1,4 +1,5 @@
 # coding: utf-8
+from typing_extensions import final
 import torch
 import torch.nn.functional as F
 from torch import Tensor
@@ -161,14 +162,14 @@ def transformer_greedy(
     # a subsequent mask is intersected with this in decoder forward pass
     trg_mask = src_mask.new_ones([1, 1, 1])
     finished = src_mask.new_zeros((batch_size)).byte()
-
+    final_att_scores = None 
     for _ in range(max_output_length):
 
         trg_embed = embed(ys)  # embed the previous tokens
 
         # pylint: disable=unused-variable
         with torch.no_grad():
-            logits, out, _, _ = decoder(
+            logits, out, att_scores, _ = decoder(
                 trg_embed=trg_embed,
                 encoder_output=encoder_output,
                 encoder_hidden=None,
@@ -188,10 +189,11 @@ def transformer_greedy(
         finished += is_eos
         # stop predicting if <eos> reached for all elements in batch
         if (finished >= 1).sum() == batch_size:
+            final_att_scores = att_scores #[{'',''},{'',''}]
             break
 
-    ys = ys[:, 1:]  # remove BOS-symbol
-    return ys.detach().cpu().numpy(), None
+    ys = ys[:, 1:]  # remove BOS-symbol #B,T
+    return ys.detach().cpu().numpy(), final_att_scores
 
 
 # pylint: disable=too-many-statements,too-many-branches
@@ -287,11 +289,12 @@ def beam_search(
 
     # Structure that holds finished hypotheses.
     hypotheses = [[] for _ in range(batch_size)]
-
+    attention_scores = None
     results = {
         "predictions": [[] for _ in range(batch_size)],
         "scores": [[] for _ in range(batch_size)],
         "gold_score": [0] * batch_size,
+        "attention":[[] for _ in range(batch_size)]
     }
 
     for step in range(max_output_length):
@@ -320,7 +323,9 @@ def beam_search(
             unroll_steps=1,
             trg_mask=trg_mask,  # subsequent mask for Transformer only
         )
-
+        #added by yutong att_scores
+        #[{'trg_src_attention': 'src_src_attention':[LAYER1, LAYER2(h,t,t)]}]b*K #note that here b=Batchsize*k
+        
         # For the Transformer we made predictions for all time steps up to
         # this point, so we only want to know about the last time step.
         if transformer:
@@ -340,10 +345,10 @@ def beam_search(
             curr_scores /= length_penalty
 
         # flatten log_probs into a list of possibilities
-        curr_scores = curr_scores.reshape(-1, size * decoder.output_size)
+        curr_scores = curr_scores.reshape(-1, size * decoder.output_size) #B,K*V
 
         # pick currently best top k hypotheses (flattened order)
-        topk_scores, topk_ids = curr_scores.topk(size, dim=-1)
+        topk_scores, topk_ids = curr_scores.topk(size, dim=-1) #B,K
 
         if alpha > -1:
             # recover original log probs
@@ -353,7 +358,7 @@ def beam_search(
 
         # reconstruct beam origin and true word ids from flattened order
         topk_beam_index = topk_ids.div(decoder.output_size)
-        topk_ids = topk_ids.fmod(decoder.output_size)
+        topk_ids = topk_ids.fmod(decoder.output_size) #B,K
 
         # map beam_index to batch_index in the flat representation
         batch_index = topk_beam_index + beam_offset[
@@ -365,21 +370,22 @@ def beam_search(
         alive_seq = torch.cat(
             [alive_seq.index_select(0, select_indices), topk_ids.view(-1, 1)], -1
         )  # batch_size*k x hyp_len
-
-        is_finished = topk_ids.eq(eos_index)
+        alive_attention = [att_scores[si] for si in select_indices] #B*k
+        #print(len(alive_attention), alive_attention[0].keys(), alive_attention[0]['trg_trg_attention'].shape)
+        is_finished = topk_ids.eq(eos_index) #B,K
         if step + 1 == max_output_length:
             is_finished.fill_(True)
         # end condition is whether the top beam is finished
-        end_condition = is_finished[:, 0].eq(True)
+        end_condition = is_finished[:, 0].eq(True) #B,K
 
         # save finished hypotheses
         if is_finished.any():
-            predictions = alive_seq.view(-1, size, alive_seq.size(-1))
-            for i in range(is_finished.size(0)):
+            predictions = alive_seq.view(-1, size, alive_seq.size(-1)) #B*k, hyp_len -> B,k,hyp_len
+            for i in range(is_finished.size(0)): #iterate through batch
                 b = batch_offset[i]
                 if end_condition[i]:
                     is_finished[i].fill_(True)
-                finished_hyp = is_finished[i].nonzero().view(-1)
+                finished_hyp = is_finished[i].nonzero().view(-1) #k
                 # store finished hypotheses for this batch
                 for j in finished_hyp:
                     # Check if the prediction has more than one EOS.
@@ -390,15 +396,17 @@ def beam_search(
                             (
                                 topk_scores[i, j],
                                 predictions[i, j, 1:],
+                                alive_attention[i*is_finished.size(0)+j]
                             )  # ignore start_token
                         )
                 # if the batch reached the end, save the n_best hypotheses
                 if end_condition[i]:
                     best_hyp = sorted(hypotheses[b], key=lambda x: x[0], reverse=True)
-                    for n, (score, pred) in enumerate(best_hyp):
+                    for n, (score, pred, att) in enumerate(best_hyp):
                         if n >= n_best:
                             break
                         results["scores"][b].append(score)
+                        results["attention"][b].append(att)
                         results["predictions"][b].append(pred)
             non_finished = end_condition.eq(False).nonzero().view(-1).long()
             # if all sentences are translated, no need to go further
@@ -408,7 +416,7 @@ def beam_search(
             # remove finished batches for the next step
             topk_log_probs = topk_log_probs.index_select(0, non_finished)
             batch_index = batch_index.index_select(0, non_finished)
-            batch_offset = batch_offset.index_select(0, non_finished)
+            batch_offset = batch_offset.index_select(0, non_finished) #drop finished batch
             alive_seq = predictions.index_select(0, non_finished).view(
                 -1, alive_seq.size(-1)
             )
@@ -447,5 +455,5 @@ def beam_search(
     final_outputs = pad_and_stack_hyps(
         [r[0].cpu().numpy() for r in results["predictions"]], pad_value=pad_index
     )
-
-    return final_outputs, None
+    final_attentions = [att[0] for att in results['attention']] #for each example, take the attention scores for top1 prediction
+    return final_outputs, final_attentions

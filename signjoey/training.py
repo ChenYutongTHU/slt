@@ -194,7 +194,7 @@ class TrainManager:
                 optimizer=self.optimizer,
                 total_epochs=self.warmup,
                 last_epoch=-1
-            )
+           ) 
         else:
             self.warmup_scheduler = None
         # learning rate scheduling
@@ -202,7 +202,7 @@ class TrainManager:
             config=train_config,
             scheduler_mode="min" if self.minimize_metric else "max",
             optimizer=self.optimizer,
-            hidden_size=config["model"]["encoder"]["hidden_size"],
+            hidden_size=config["model"]["encoder"].get("hidden_size",512),
         )
         #amp scaler 
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
@@ -1026,7 +1026,7 @@ class TrainManager:
         """
 
         with torch.cuda.amp.autocast(enabled=self.use_amp):
-            recognition_loss, translation_loss, _ = get_loss_for_batch(
+            recognition_loss, translation_loss, _, _ = get_loss_for_batch(
                 model=self.model,
                 batch=batch,
                 recognition_loss_function=self.recognition_loss_function

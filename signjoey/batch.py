@@ -337,7 +337,7 @@ class Batch_from_examples(Batch):
                     os.listdir(seq_folder)) if ss[-4:] == '.png']
                 selected_indexs, valid_len = self.get_selected_indexs(
                     len(image_path_list), tmin=dat_min, tmax=dat_max,
-                    level=data_cfg['temporal_augmentation'].get('level','sentence'),
+                    level=data_cfg['temporal_augmentation'].get('level','sentence') if 'temporal_augmentation' in data_cfg else 'sentence',
                     num_tokens=num_tokens)
                 self.sgn_lengths.append(valid_len)  # l0,l1,l2,l3,l4
                 frame_seq = self.load_frames(image_path_list, selected_indexs)

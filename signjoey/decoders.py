@@ -8,6 +8,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 from torch import Tensor
+import numpy as np
 from signjoey.attention import BahdanauAttention, LuongAttention
 from signjoey.encoders import Encoder
 from signjoey.helpers import freeze_params, subsequent_mask
@@ -493,7 +494,7 @@ class TransformerDecoder(Decoder):
 
         self._hidden_size = hidden_size
         self._output_size = vocab_size
-
+        self.num_layers = num_layers
         # create num_layers decoder layers and put them in a list
         self.layers = nn.ModuleList(
             [
@@ -547,14 +548,20 @@ class TransformerDecoder(Decoder):
         x = self.emb_dropout(x)
 
         trg_mask = trg_mask & subsequent_mask(trg_embed.size(1)).type_as(trg_mask)
-
+        attention = {'trg_trg_attention':[], 'trg_src_attention':[]}
         for layer in self.layers:
-            x = layer(x=x, memory=encoder_output, src_mask=src_mask, trg_mask=trg_mask)
-
+            x, trg_trg_att, src_src_att = layer(x=x, memory=encoder_output, src_mask=src_mask, trg_mask=trg_mask, output_attention=True)
+            attention['trg_trg_attention'].append(trg_trg_att) #B,H,T,T
+            attention['trg_src_attention'].append(src_src_att) #B,H,T,T
         x = self.layer_norm(x)
         output = self.output_layer(x)
-
-        return output, x, None, None
+        output_attention = []
+        for i in range(x.shape[0]):
+            output_attention.append({
+                'trg_trg_attention':torch.stack([attention['trg_trg_attention'][n][i] for n in range(self.num_layers)]).detach().cpu().numpy(),
+                'trg_src_attention':torch.stack([attention['trg_src_attention'][n][i] for n in range(self.num_layers)]).detach().cpu().numpy(), #H,T,T
+                }) # H,T,T
+        return output, x, output_attention, None
 
     def __repr__(self):
         return "%s(num_layers=%r, num_heads=%r)" % (

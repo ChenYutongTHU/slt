@@ -15,7 +15,7 @@ class MultiHeadedAttention(nn.Module):
     https://github.com/OpenNMT/OpenNMT-py
     """
 
-    def __init__(self, num_heads: int, size: int, dropout: float = 0.1, output_attention=False):
+    def __init__(self, num_heads: int, size: int, dropout: float = 0.1):
         """
         Create a multi-headed attention layer.
         :param num_heads: the number of heads
@@ -38,9 +38,8 @@ class MultiHeadedAttention(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
         self.dropout = nn.Dropout(dropout)
 
-        self.output_attention = output_attention
 
-    def forward(self, k: Tensor, v: Tensor, q: Tensor, mask: Tensor = None):
+    def forward(self, k: Tensor, v: Tensor, q: Tensor, mask: Tensor = None, output_attention: bool=False):
         """
         Computes multi-headed attention.
 
@@ -88,7 +87,7 @@ class MultiHeadedAttention(nn.Module):
         )
 
         output = self.output_layer(context)
-        if self.output_attention:
+        if output_attention:
             return output, attention
         else:
             return output
@@ -205,7 +204,6 @@ class TransformerEncoderLayer(nn.Module):
 
     def __init__(
         self, size: int = 0, ff_size: int = 0, num_heads: int = 0, dropout: float = 0.1,
-        output_attention: bool=False,
         fc_type: str='linear', kernel_size=1,
         skip_connection: bool=True
     ):
@@ -220,7 +218,7 @@ class TransformerEncoderLayer(nn.Module):
 
         if num_heads>0:
             self.layer_norm = nn.LayerNorm(size, eps=1e-6)
-            self.src_src_att = MultiHeadedAttention(num_heads, size, dropout=dropout, output_attention=output_attention)
+            self.src_src_att = MultiHeadedAttention(num_heads, size, dropout=dropout)
         else:
             self.src_src_att = None
         self.feed_forward = PositionwiseFeedForward(
@@ -230,13 +228,12 @@ class TransformerEncoderLayer(nn.Module):
         )
         self.dropout = nn.Dropout(dropout)
         self.size = size
-        self.output_attention = output_attention
         self.skip_connection = skip_connection
         if not self.skip_connection:
             print('Turn off skip connection in transformer Encoder layer!')
 
     # pylint: disable=arguments-differ
-    def forward(self, x: Tensor, mask: Tensor) -> Tensor:
+    def forward(self, x: Tensor, mask: Tensor, output_attention: bool=True) -> Tensor:
         """
         Forward pass for a single transformer encoder layer.
         First applies layer norm, then self attention,
@@ -249,10 +246,10 @@ class TransformerEncoderLayer(nn.Module):
         """
         if self.src_src_att:
             x_norm = self.layer_norm(x)
-            if self.output_attention:
-                h, attention = self.src_src_att(x_norm, x_norm, x_norm, mask)
+            if output_attention:
+                h, attention = self.src_src_att(x_norm, x_norm, x_norm, mask, output_attention=output_attention)
             else:
-                h = self.src_src_att(x_norm, x_norm, x_norm, mask)
+                h = self.src_src_att(x_norm, x_norm, x_norm, mask, output_attention=False)
             if self.skip_connection:
                 h = self.dropout(h) + x
             else:
@@ -260,7 +257,7 @@ class TransformerEncoderLayer(nn.Module):
         else:
             h = x
         o = self.feed_forward(h)
-        if self.output_attention:
+        if output_attention:
             return o, attention
         else:
             return o
@@ -308,6 +305,7 @@ class TransformerDecoderLayer(nn.Module):
         memory: Tensor = None,
         src_mask: Tensor = None,
         trg_mask: Tensor = None,
+        output_attention: bool = False
     ) -> Tensor:
         """
         Forward pass of a single Transformer decoder layer.
@@ -320,14 +318,16 @@ class TransformerDecoderLayer(nn.Module):
         """
         # decoder/target self-attention
         x_norm = self.x_layer_norm(x)
-        h1 = self.trg_trg_att(x_norm, x_norm, x_norm, mask=trg_mask)
+        h1, trg_trg_attention = self.trg_trg_att(x_norm, x_norm, x_norm, mask=trg_mask, output_attention=output_attention)
         h1 = self.dropout(h1) + x
 
         # source-target attention
         h1_norm = self.dec_layer_norm(h1)
-        h2 = self.src_trg_att(memory, memory, h1_norm, mask=src_mask)
+        h2, src_trg_attention = self.src_trg_att(memory, memory, h1_norm, mask=src_mask, output_attention=output_attention)
 
         # final position-wise feed-forward layer
         o = self.feed_forward(self.dropout(h2) + h1)
-
-        return o
+        if output_attention:
+            return o, trg_trg_attention, src_trg_attention
+        else:
+            return o

@@ -181,6 +181,7 @@ class SpatialEmbeddings(nn.Module):
         activation_type: str = None,
         scale: bool = False,
         scale_factor: float = None,
+        is_null: bool=False,
         **kwargs
     ):
         """
@@ -192,27 +193,28 @@ class SpatialEmbeddings(nn.Module):
         :param freeze: freeze the embeddings during training
         """
         super().__init__()
-
         self.embedding_dim = embedding_dim
         self.input_size = input_size
-        self.ln = nn.Linear(self.input_size, self.embedding_dim)
+        self.is_null = is_null
+        if self.is_null==False:
+            self.ln = nn.Linear(self.input_size, self.embedding_dim)
 
-        self.norm_type = norm_type
-        if self.norm_type:
-            self.norm = MaskedNorm(
-                norm_type=norm_type, num_groups=num_heads, num_features=embedding_dim
-            )
+            self.norm_type = norm_type
+            if self.norm_type:
+                self.norm = MaskedNorm(
+                    norm_type=norm_type, num_groups=num_heads, num_features=embedding_dim
+                )
 
-        self.activation_type = activation_type
-        if self.activation_type:
-            self.activation = get_activation(activation_type)
+            self.activation_type = activation_type
+            if self.activation_type:
+                self.activation = get_activation(activation_type)
 
-        self.scale = scale
-        if self.scale:
-            if scale_factor:
-                self.scale_factor = scale_factor
-            else:
-                self.scale_factor = math.sqrt(self.embedding_dim)
+            self.scale = scale
+            if self.scale:
+                if scale_factor:
+                    self.scale_factor = scale_factor
+                else:
+                    self.scale_factor = math.sqrt(self.embedding_dim)
 
         if freeze:
             freeze_params(self)
@@ -224,19 +226,21 @@ class SpatialEmbeddings(nn.Module):
         :param x: input frame features
         :return: embedded representation for `x`
         """
-
-        x = self.ln(x)
-
-        if self.norm_type:
-            x = self.norm(x, mask)
-
-        if self.activation_type:
-            x = self.activation(x)
-
-        if self.scale:
-            return x * self.scale_factor
-        else:
+        if self.is_null:
             return x
+        else:
+            x = self.ln(x)
+
+            if self.norm_type:
+                x = self.norm(x, mask)
+
+            if self.activation_type:
+                x = self.activation(x)
+
+            if self.scale:
+                return x * self.scale_factor
+            else:
+                return x
 
     def __repr__(self):
         return "%s(embedding_dim=%d, input_size=%d)" % (

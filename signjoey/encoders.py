@@ -277,7 +277,6 @@ class TransformerEncoder(Encoder):
         emb_dropout: float = 0.1,
         freeze: bool = False,
         pe: bool = True,
-        output_attention: bool = False,
         LN: bool = True,
         skip_connection: bool=True,
         **kwargs
@@ -295,7 +294,6 @@ class TransformerEncoder(Encoder):
         :param kwargs:
         """
         super(TransformerEncoder, self).__init__()
-
         # build all (num_layers) layers
         self.layers = nn.ModuleList(
             [
@@ -304,7 +302,6 @@ class TransformerEncoder(Encoder):
                     ff_size=ff_size,
                     num_heads=num_heads,
                     dropout=dropout,
-                    output_attention=output_attention,
                     fc_type=kwargs.get('fc_type', 'linear'),
                     kernel_size=kwargs.get('kernel_size', 1),
                     skip_connection=skip_connection
@@ -312,7 +309,6 @@ class TransformerEncoder(Encoder):
                 for _ in range(num_layers)
             ]
         )
-        self.output_attention = output_attention
         if LN:
             self.layer_norm = nn.LayerNorm(hidden_size, eps=1e-6)
         else:
@@ -332,7 +328,8 @@ class TransformerEncoder(Encoder):
 
     # pylint: disable=arguments-differ
     def forward(
-        self, embed_src: Tensor, src_length: Tensor, mask: Tensor
+        self, embed_src: Tensor, src_length: Tensor, mask: Tensor,
+        output_attention: bool=True
     ) -> (Tensor, Tensor):
         """
         Pass the input (and mask) through each layer in turn.
@@ -357,17 +354,17 @@ class TransformerEncoder(Encoder):
         else:
             x = embed_src
         x = self.emb_dropout(x)
-        if self.output_attention:
+        if output_attention:
             attentions = []
         for layer in self.layers:
-            if self.output_attention:
-                x, attention = layer(x, mask)
+            if output_attention:
+                x, attention = layer(x, mask, output_attention=True)
                 attentions.append(attention)
             else:
                 x = layer(x, mask)
 
-        if self.output_attention:
-            attentions = torch.stack(attentions, dim=1)
+        if output_attention:
+            attentions = torch.stack(attentions, dim=1) #B, L, H, T,T
             return self.layer_norm(x), None, attentions # None -> encoder hidden(unused)
         else:
             return self.layer_norm(x), None
