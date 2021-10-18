@@ -199,7 +199,7 @@ def validate_on_data(
         total_num_seqs = 0
         split_gls = []
         split_txt = []
-        for batch in iter(valid_iter):
+        for batch in tqdm(iter(valid_iter)):
             split_gls.append(batch.gls)
             split_txt.append(batch.txt)
 
@@ -221,7 +221,8 @@ def validate_on_data(
                     translation_loss_weight=translation_loss_weight
                     if do_translation
                     else None,
-                    input_data=cfg['data'].get('input_data','feature')
+                    input_data=cfg['data'].get('input_data','feature'),
+                    output_attention=output_attention
                 )
                 if output_attention:
                     assert attention!=None #tensor B,Headsize, L, L
@@ -581,7 +582,8 @@ def test(
         recognition_beam_sizes = [1]
         translation_beam_sizes = [1]
         translation_beam_alphas = [-1]
-
+        # cfg["testing"]['output_attention'] = True
+        # cfg["testing"]['output_feature'] = True written in config
     if "testing" in cfg.keys():
         max_recognition_beam_size = cfg["testing"].get(
             "max_recognition_beam_size", None
@@ -654,7 +656,7 @@ def test(
                 data=dev_data,
                 output_file_format=output_path+'.{}.dev',
                 gls_prob=dev_recognition_results['gls_prob'] if 'gls_prob' in dev_recognition_results else None,
-                encoder_attention=dev_recognition_results['all_self_attention_scores'],
+                encoder_attention=dev_recognition_results['all_self_attention_scores'] if 'all_self_attention_scores' in dev_recognition_results else None,
                 sgn_feature=dev_recognition_results['all_sgn_feature'],
                 encoder_outputs=dev_recognition_results['all_encoder_outputs'])
 
@@ -717,7 +719,9 @@ def test(
                     translation_beam_size=tbw,
                     translation_beam_alpha=ta,
                     frame_subsampling_ratio=frame_subsampling_ratio,
-                    output_feature=True
+                    output_feature=cfg["testing"].get("output_feature",False),
+                    output_attention=cfg["testing"].get(
+                        "output_attention", False)
                 )
                 if save_immediate_results:
                     save_immediate_results_fun(
@@ -728,7 +732,7 @@ def test(
                         save_immediate_results_fun(
                             data=dev_data,
                             output_file_format=output_path+'.{}.dev',
-                            encoder_attention=dev_translation_results[tbw][ta]['all_self_attention_scores'],
+                            encoder_attention=dev_translation_results[tbw][ta]['all_self_attention_scores'] if 'all_self_attention_scores' in dev_translation_results[tbw][ta] else None,
                             encoder_outputs=dev_translation_results[tbw][ta]['all_encoder_outputs'],
                             sgn_feature=dev_translation_results[tbw][ta]['all_sgn_feature'])
 

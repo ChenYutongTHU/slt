@@ -233,7 +233,7 @@ class TransformerEncoderLayer(nn.Module):
             print('Turn off skip connection in transformer Encoder layer!')
 
     # pylint: disable=arguments-differ
-    def forward(self, x: Tensor, mask: Tensor, output_attention: bool=True) -> Tensor:
+    def forward(self, x: Tensor, mask: Tensor, output_attention: bool=False) -> Tensor:
         """
         Forward pass for a single transformer encoder layer.
         First applies layer norm, then self attention,
@@ -256,6 +256,7 @@ class TransformerEncoderLayer(nn.Module):
                 h = self.dropout(h)
         else:
             h = x
+            attention = None
         o = self.feed_forward(h)
         if output_attention:
             return o, attention

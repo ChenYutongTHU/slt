@@ -38,7 +38,8 @@ def get_loss_for_batch(
     translation_loss_weight: float,
     recognition_loss_function: nn.Module,
     translation_loss_function: nn.Module,
-    input_data: str='feature'
+    input_data: str='feature',
+    output_attention: bool=False
     ) -> (Tensor, Tensor):
     
     """
@@ -63,6 +64,7 @@ def get_loss_for_batch(
             sgn_lengths=batch.sgn_lengths,
             txt_input=batch.txt_input,
             txt_mask=batch.txt_mask,
+            output_attention=output_attention
             )
     else:
         (decoder_outputs, gloss_probabilities, attention, encoder_outputs), batch.sgn, batch.sgn_mask, batch.sgn_lengths = model(
@@ -71,6 +73,7 @@ def get_loss_for_batch(
             sgn_lengths=batch.sgn_lengths,
             txt_input=batch.txt_input,
             txt_mask=batch.txt_mask,
+            output_attention=output_attention
         )
 
     do_recognition = recognition_loss_function!=None
@@ -160,6 +163,7 @@ class SignModel(nn.Module):
         self,
         encoder: Encoder,
         gloss_output_layer: nn.Module,
+        gloss_encoder: nn.Module,
         decoder: Decoder,
         sgn_embed: SpatialEmbeddings,
         txt_embed: Embeddings,
@@ -172,6 +176,7 @@ class SignModel(nn.Module):
         Create a new encoder-decoder model
 
         :param encoder: encoder
+        :param gloss_encoder: gloss_encoder
         :param decoder: decoder
         :param sgn_embed: spatial feature frame embeddings
         :param txt_embed: spoken language word embedding
@@ -183,6 +188,7 @@ class SignModel(nn.Module):
         super().__init__()
 
         self.encoder = encoder
+        self.gloss_encoder = gloss_encoder
         self.decoder = decoder
 
         self.sgn_embed = sgn_embed
@@ -213,6 +219,7 @@ class SignModel(nn.Module):
         sgn_lengths: Tensor,
         txt_input: Tensor,
         txt_mask: Tensor = None,
+        output_attention: bool=False
     ) -> (Tensor, Tensor, Tensor, Tensor):
         """
         First encodes the source sentence.
@@ -226,7 +233,7 @@ class SignModel(nn.Module):
         :return: decoder outputs
         """
         encoder_outputs = self.encode(
-            sgn=sgn, sgn_mask=sgn_mask, sgn_length=sgn_lengths
+            sgn=sgn, sgn_mask=sgn_mask, sgn_length=sgn_lengths, output_attention=output_attention
         )
         if len(encoder_outputs) == 3:
             encoder_output, encoder_hidden, attention = encoder_outputs
@@ -245,6 +252,13 @@ class SignModel(nn.Module):
             gloss_probabilities = None
 
         if self.do_translation:
+            if self.gloss_encoder:
+                encoder_output, encoder_hidden = self.gloss_encoder(
+                    embed_src = encoder_output,
+                    src_length = sgn_lengths,
+                    output_attention = False,
+                    mask = sgn_mask
+                )
             unroll_steps = txt_input.size(1)
             decoder_outputs = self.decode(
                 encoder_output=encoder_output,
@@ -260,7 +274,7 @@ class SignModel(nn.Module):
         return decoder_outputs, gloss_probabilities, attention, encoder_output
 
     def encode(
-        self, sgn: Tensor, sgn_mask: Tensor, sgn_length: Tensor
+        self, sgn: Tensor, sgn_mask: Tensor, sgn_length: Tensor, output_attention: bool=False
     ) -> (Tensor, Tensor):
         """
         Encodes the source sentence.
@@ -274,6 +288,7 @@ class SignModel(nn.Module):
             embed_src=self.sgn_embed(x=sgn, mask=sgn_mask),
             src_length=sgn_length,
             mask=sgn_mask,
+            output_attention=output_attention
         )
 
     def decode(
@@ -748,6 +763,13 @@ def build_model(
         )
         dec_dropout = cfg["decoder"].get("dropout", 0.0)
         dec_emb_dropout = cfg["decoder"]["embeddings"].get("dropout", dec_dropout)
+        if "gloss_encoder" in cfg:
+            if cfg["gloss_encoder"].get("type", "transformer"):
+                gloss_encoder = TransformerEncoder(
+                    **cfg["gloss_encoder"],  # default pe=True, fc_type='linear', kernel_size=1
+                )
+        else:
+            gloss_encoder = None
         if cfg["decoder"].get("type", "recurrent") == "transformer":
             decoder = TransformerDecoder(
                 **cfg["decoder"],
@@ -771,6 +793,7 @@ def build_model(
     sign_model: SignModel = SignModel(
         encoder=encoder,
         gloss_output_layer=gloss_output_layer,
+        gloss_encoder = gloss_encoder,
         decoder=decoder,
         sgn_embed=sgn_embed,
         txt_embed=txt_embed,

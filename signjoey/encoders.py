@@ -329,7 +329,7 @@ class TransformerEncoder(Encoder):
     # pylint: disable=arguments-differ
     def forward(
         self, embed_src: Tensor, src_length: Tensor, mask: Tensor,
-        output_attention: bool=True
+        output_attention: bool=False
     ) -> (Tensor, Tensor):
         """
         Pass the input (and mask) through each layer in turn.
