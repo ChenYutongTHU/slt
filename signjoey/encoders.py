@@ -279,6 +279,7 @@ class TransformerEncoder(Encoder):
         pe: bool = True,
         LN: bool = True,
         skip_connection: bool=True,
+        output_size: int=512,
         **kwargs
     ):
         """
@@ -310,7 +311,7 @@ class TransformerEncoder(Encoder):
             ]
         )
         if LN:
-            self.layer_norm = nn.LayerNorm(hidden_size, eps=1e-6)
+            self.layer_norm = nn.LayerNorm(output_size, eps=1e-6)
         else:
             print('Turn off layer norm at the last of encoder')
             self.layer_norm = nn.Identity()
@@ -321,8 +322,16 @@ class TransformerEncoder(Encoder):
             self.pe = None
         self.emb_dropout = nn.Dropout(p=emb_dropout)
 
-        self._output_size = hidden_size
-
+        self._output_size = output_size
+        if self._output_size != hidden_size:
+            print('transformer outputsize {} != hidden size {}'.format(self._output_size, hidden_size))
+            print('Create a mapping layer')
+            self.map2gloss_embed = nn.Sequential(
+                nn.Linear(hidden_size, self._output_size),
+                nn.Dropout(dropout),
+            )
+        else:
+            self.map2gloss_embed = nn.Identity()
         if freeze:
             freeze_params(self)
 
@@ -363,6 +372,7 @@ class TransformerEncoder(Encoder):
             else:
                 x = layer(x, mask)
 
+        x = self.map2gloss_embed(x)
         if output_attention:
             attentions = torch.stack(attentions, dim=1) #B, L, H, T,T
             return self.layer_norm(x), None, attentions # None -> encoder hidden(unused)

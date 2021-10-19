@@ -31,7 +31,7 @@ from torch import Tensor
 from typing import Union
 from signjoey.resnet import Resnet50
 from signjoey.models_3d.CoCLR.utils.utils import neq_load_customized
-
+from initialization import initialize_gloss_embed
 def get_loss_for_batch(
     model,
     batch: Batch,
@@ -746,6 +746,11 @@ def build_model(
     # build encoder
     enc_dropout = cfg["encoder"].get("dropout", 0.0)
     enc_emb_dropout = cfg["encoder"]["embeddings"].get("dropout", 0.1)
+    if 'gloss_embedding' in cfg:
+        assert cfg["encoder"].get("type", "recurrent") == "transformer"
+        encoder_output_size = cfg["gloss_embedding"]["embedding_dim"]
+    else:
+        encoder_output_size = cfg["encoder"].get("hidden_size", 512)
     if cfg["encoder"].get("type", "recurrent") == "transformer":
         assert (
             cfg["encoder"]["embeddings"]["embedding_dim"]
@@ -755,11 +760,12 @@ def build_model(
             **cfg["encoder"], #default pe=True, fc_type='linear', kernel_size=1
             emb_size=sgn_embed.embedding_dim,
             emb_dropout=enc_emb_dropout,
+            output_size=encoder_output_size
         )
     elif cfg["encoder"].get("type", "recurrent") == "empty":
         encoder = NullEncoder( 
             emb_size=sgn_embed.embedding_dim, #default pe=Fals
-            pe=cfg["encoder"].get("pe",False)
+            pe=cfg["encoder"].get("pe",False),
         )
     elif cfg["encoder"].get("type", "recurrent") == 'cnn':
         encoder = CNNEncoder(
@@ -780,8 +786,9 @@ def build_model(
 
     if do_recognition:
         gloss_output_layer = nn.Linear(encoder.output_size, len(gls_vocab))
-        if cfg["encoder"].get("freeze", False):
-            freeze_params(gloss_output_layer)
+        if 'gloss_embedding' in cfg:
+            if cfg["gloss_embedding"].get("freeze_mode", "all_tune")=='all_freeze':
+                freeze_params(gloss_output_layer)
     else:
         gloss_output_layer = None
 
@@ -821,6 +828,7 @@ def build_model(
     else:
         txt_embed = None
         decoder = None
+        gloss_encoder = None
 
     sign_model: SignModel = SignModel(
         encoder=encoder,
@@ -853,6 +861,10 @@ def build_model(
 
     # custom initialization of sign_model parameters
     initialize_model(sign_model, cfg, txt_padding_idx)
+    if "gloss_embedding" in cfg:
+        initialize_gloss_embed(sign_model.gloss_output_layer, #linear layer
+            cfg["gloss_embedding"]['init_file'],
+            gls_vocab)
 
     if input_data == 'feature':
         return sign_model

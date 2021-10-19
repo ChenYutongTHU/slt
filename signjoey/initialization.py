@@ -55,6 +55,18 @@ def xavier_uniform_n_(w: Tensor, gain: float = 1.0, n: int = 4) -> None:
         a = math.sqrt(3.0) * std
         nn.init.uniform_(w, -a, a)
 
+def initialize_gloss_embed(model: nn.Linear, init_file: str, gls_vocab) -> None:
+    gloss_embed = torch.load(init_file)
+    print('Load pretrained gloss embed from ', init_file)
+    with torch.no_grad():
+        for i in range(len(gls_vocab)):
+            gls_str = gls_vocab.itos[i]
+            if gls_str in gloss_embed:
+                model.weight.data[i,:] = gloss_embed[gls_str]
+            else:
+                print('Unknown gls {} train from scratch'.format(gls_str))
+                print('Partly tune parameters are not supported now, please set freeze_mode to all_tune')
+    return
 
 # pylint: disable=too-many-branches
 def initialize_model(model: nn.Module, cfg: dict, txt_padding_idx: int) -> None:
