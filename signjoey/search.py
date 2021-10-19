@@ -370,7 +370,7 @@ def beam_search(
         alive_seq = torch.cat(
             [alive_seq.index_select(0, select_indices), topk_ids.view(-1, 1)], -1
         )  # batch_size*k x hyp_len
-        alive_attention = [att_scores[si] for si in select_indices] #B*k
+        alive_attention = [att_scores[si] for si in select_indices] #B*k  
         #print(len(alive_attention), alive_attention[0].keys(), alive_attention[0]['trg_trg_attention'].shape)
         is_finished = topk_ids.eq(eos_index) #B,K
         if step + 1 == max_output_length:
@@ -388,15 +388,20 @@ def beam_search(
                 finished_hyp = is_finished[i].nonzero().view(-1) #k
                 # store finished hypotheses for this batch
                 for j in finished_hyp:
+                    # for each finished hyp b -> batchsize
                     # Check if the prediction has more than one EOS.
                     # If it has more than one EOS, it means that the prediction should have already
                     # been added to the hypotheses, so you don't have to add them again.
                     if (predictions[i, j, 1:] == eos_index).nonzero().numel() < 2:
+                        if i*is_finished.size(1)+j>len(alive_attention):
+                            print('alive_attention', len(alive_attention))
+                            print('is_finished size', is_finished.size())
+                            print('i=',i,'  j=',j)
                         hypotheses[b].append(
                             (
                                 topk_scores[i, j],
                                 predictions[i, j, 1:],
-                                alive_attention[i*is_finished.size(0)+j]
+                                alive_attention[i*is_finished.size(1)+j]
                             )  # ignore start_token
                         )
                 # if the batch reached the end, save the n_best hypotheses

@@ -24,6 +24,109 @@ import yaml
 from signjoey.vocabulary import GlossVocabulary, TextVocabulary
 
 
+def sparse_sample(batch_enc_op, batch_gls_prob, batch_mask, select_strategy='all'):
+    #enc_op B,T,D
+    #gls_prob B,T,C
+    #batch_mask B,1,T
+    #select_strategy format ['all','random_num_top1', 'top1/2_mean/max/random/all']
+    if select_strategy == 'all':
+        return batch_enc_op, batch_mask
+
+    batch_size = batch_enc_op.shape[0]
+    assert batch_size == 1, 'currently only support batch_size=1!'
+    batch_selected_op = []
+    batch_selected_op_len = []
+    for b in range(batch_size):
+        length = torch.sum(batch_mask[b])
+        gls_prob, enc_op = batch_gls_prob[b, :length], batch_enc_op[b, :length]
+        selected_op = []
+        t, v = gls_prob.shape
+        t, d = enc_op.shape
+        sort_idx = torch.argsort(gls_prob, dim=1, descending=True)
+        num = torch.sum(torch.argmax(gls_prob, axis=1) != 0)
+        if select_strategy == 'random_num_top1':
+            selected_op_id = np.sort(np.random.permutation(t)[:num])
+            # print(selected_op_id)
+            selected_op = [enc_op[i, :] for i in selected_op_id]
+        else:
+            topk, agg = select_strategy.split('_')
+            assert topk in ['top1', 'top2'], topk
+            assert agg in ['mean', 'maxprob', 'random', 'all'], agg
+            i, j = 0, 0
+            while i < t:
+                span_id = []
+                while i < t and sort_idx[i, 0] == 0:
+                    i += 1
+                if i >= t:
+                    break
+                j = i
+                cur_pred = sort_idx[i, 0]
+                while j < t and sort_idx[j, 0] == cur_pred:
+                    span_id.append(j)  # top1
+                    j += 1
+                if topk == 'top1':
+                    pass
+                elif topk == 'top2':
+                    #left span (top2)
+                    i -= 1
+                    while i >= 0 and sort_idx[i, 0] == 0 and sort_idx[i, 1] == cur_pred:
+                        span_id.append(i)
+                        i -= 1
+                    #right span
+                    while j < t and sort_idx[j, 0] == 0 and sort_idx[j, 1] == cur_pred:
+                        span_id.append(j)
+                        j += 1
+                else:
+                    raise ValueError
+
+                if agg == 'mean':
+                    ops = torch.stack([enc_op[id_, :]
+                                      for id_ in span_id], dim=0)
+                    ops = torch.mean(ops, dim=0)
+                    selected_op.append(ops)
+                elif agg == 'random':
+                    id_ = np.random.choice(span_id)
+                    selected_op.append(enc_op[id_, :])
+                elif agg == 'all':
+                    selected_op += [enc_op[id_, :] for id_ in span_id]
+                elif agg == 'maxprob':
+                    sorted_span_id = sorted(
+                        span_id, key=lambda x: gls_prob[x, cur_pred])[::-1]
+                    id_ = sorted_span_id[0]
+                    selected_op.append(enc_op[id_, :])
+                else:
+                    raise ValueError
+                i = j
+        if selected_op == []:
+            selected_op = enc_op
+        else:
+            selected_op = torch.stack(selected_op, dim=0)
+        batch_selected_op.append(selected_op)  # T,D
+        batch_selected_op_len.append(selected_op.shape[0])
+    #padding
+    max_len = max(batch_selected_op_len)
+    padded_ops = []
+    new_mask = torch.zeros([batch_size, 1, max_len],
+                           dtype=batch_mask.dtype,
+                           device=batch_mask.device)
+    for oi, op in enumerate(batch_selected_op):
+        #ops_ Td
+        op_len = op.shape[0]
+        new_mask[oi, :, :op_len] = True
+        if op_len < max_len:
+            padded = torch.tile(torch.zeros(
+                [max_len-op_len, op.shape[1]],
+                dtype=op.dtype,
+                device=op.device))
+            op = torch.cat(
+                [op, padded],
+                dim=0)  # T',D
+        padded_ops.append(op)
+    batch_selected_op = torch.stack(padded_ops, dim=0)  # B,T,D
+    return batch_selected_op, new_mask
+
+
+
 def get_distributed_sampler_index(total_len, batch_size, rank, world_size):
     indices = list(range(total_len))
     num_replicas = world_size

@@ -199,7 +199,7 @@ def validate_on_data(
         total_num_seqs = 0
         split_gls = []
         split_txt = []
-        for batch in tqdm(iter(valid_iter)):
+        for batch in iter(valid_iter):
             split_gls.append(batch.gls)
             split_txt.append(batch.txt)
 
@@ -508,7 +508,6 @@ def test(
             raise FileNotFoundError(
                 "No checkpoint found in directory {}.".format(model_dir)
             )
-
     batch_size = cfg["training"]["batch_size"]
     batch_type = cfg["training"].get("batch_type", "sentence")
     use_cuda = cfg["training"].get("use_cuda", False)
@@ -517,7 +516,11 @@ def test(
     translation_max_output_length = cfg["training"].get(
         "translation_max_output_length", None
     )
-
+    # load vocab
+    vocab_dir = os.path.dirname(ckpt) if ckpt else model_dir
+    cfg['data']['gls_vocab'] = os.path.join(os.path.join(vocab_dir, 'gls.vocab'))
+    cfg['data']['txt_vocab'] = os.path.join(os.path.join(vocab_dir, 'txt.vocab'))
+    print('Load  vocab file from ', vocab_dir)
     # load the data
     _, dev_data, test_data, gls_vocab, txt_vocab, _, _ = load_data(data_cfg=cfg["data"])
     if save_immediate_results and num>0:

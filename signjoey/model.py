@@ -17,6 +17,7 @@ from signjoey.embeddings import Embeddings, SpatialEmbeddings
 from signjoey.encoders import CNNEncoder, Encoder, RecurrentEncoder, TransformerEncoder, NullEncoder
 from signjoey.decoders import Decoder, RecurrentDecoder, TransformerDecoder
 from signjoey.search import beam_search, greedy
+from signjoey.helpers import sparse_sample
 from signjoey.vocabulary import (
     TextVocabulary,
     GlossVocabulary,
@@ -171,6 +172,7 @@ class SignModel(nn.Module):
         txt_vocab: TextVocabulary,
         do_recognition: bool = True,
         do_translation: bool = True,
+        sample_strategy: str='all'
     ):
         """
         Create a new encoder-decoder model
@@ -188,6 +190,8 @@ class SignModel(nn.Module):
         super().__init__()
 
         self.encoder = encoder
+        self.sample_strategy = sample_strategy
+        print('sample_strategy= ', self.sample_strategy)
         self.gloss_encoder = gloss_encoder
         self.decoder = decoder
 
@@ -252,6 +256,14 @@ class SignModel(nn.Module):
             gloss_probabilities = None
 
         if self.do_translation:
+            if self.do_recognition:
+                #print('before sample ', encoder_output.shape, sgn_mask.shape, end=' --> ')
+                encoder_output, sgn_mask = sparse_sample(
+                    batch_enc_op=encoder_output, 
+                    batch_gls_prob=gloss_probabilities.permute(1,0,2).detach(), # n,t,c
+                    batch_mask = sgn_mask,  #B,1,L
+                    select_strategy=self.sample_strategy)
+                #print('after sample ', encoder_output.shape, sgn_mask.shape)
             if self.gloss_encoder:
                 encoder_output, encoder_hidden = self.gloss_encoder(
                     embed_src = encoder_output,
@@ -413,6 +425,8 @@ class SignModel(nn.Module):
         else:
             encoder_output, encoder_hidden = encoder_outputs
             attention=None
+
+
         if self.do_recognition:
             # Gloss Recognition Part
             # N x T x C
@@ -460,12 +474,30 @@ class SignModel(nn.Module):
             decoded_gloss_sequences = None
 
         if self.do_translation and translation_beam_size:
+            if self.do_recognition:
+                #print('before sample ', encoder_output.shape, sgn_mask.shape, end=' --> ')
+                encoder_output, new_sgn_mask = sparse_sample(
+                    batch_enc_op=encoder_output,
+                    batch_gls_prob=gloss_probabilities_0,  # n,t,c
+                    batch_mask=batch.sgn_mask,  # B,1,L
+                    select_strategy='top1_maxprob' if self.sample_strategy == 'top1_random' else self.sample_strategy)
+                #print('after sample ', encoder_output.shape, sgn_mask.shape)
+            else:
+                new_sgn_mask = batch.sgn_mask
+            if self.gloss_encoder:
+                encoder_output, encoder_hidden = self.gloss_encoder(
+                    embed_src=encoder_output,
+                    src_length=batch.sgn_lengths, #unused
+                    output_attention=False,
+                    mask=new_sgn_mask
+                )
+
             # greedy decoding
             if translation_beam_size < 2:
                 stacked_txt_output, stacked_attention_scores = greedy(
                     encoder_hidden=encoder_hidden,
                     encoder_output=encoder_output,
-                    src_mask=batch.sgn_mask,
+                    src_mask=new_sgn_mask, #batch.sgn_mask,
                     embed=self.txt_embed,
                     bos_index=self.txt_bos_index,
                     eos_index=self.txt_eos_index,
@@ -478,7 +510,7 @@ class SignModel(nn.Module):
                     size=translation_beam_size,
                     encoder_hidden=encoder_hidden,
                     encoder_output=encoder_output,
-                    src_mask=batch.sgn_mask,
+                    src_mask=new_sgn_mask,
                     embed=self.txt_embed,
                     max_output_length=translation_max_output_length,
                     alpha=translation_beam_alpha,
@@ -793,6 +825,7 @@ def build_model(
     sign_model: SignModel = SignModel(
         encoder=encoder,
         gloss_output_layer=gloss_output_layer,
+        sample_strategy=cfg.get('sample_strategy','all'),
         gloss_encoder = gloss_encoder,
         decoder=decoder,
         sgn_embed=sgn_embed,

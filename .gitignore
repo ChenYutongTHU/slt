@@ -26,3 +26,5 @@ base_annotations/phoenix14t.debug
 update_configs_scripts.sh
 3d_pretrainedmodels/backbone_3d/s3ds_glosscls_ckpt/epoch299.pth.tar
 signjoey/prediction_debug.py
+word_embeddings/Glove/vectors.txt
+word_embeddings/Glove/vocab.txt

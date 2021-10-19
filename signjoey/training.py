@@ -434,10 +434,22 @@ class TrainManager:
         
         model_checkpoint = load_checkpoint(path=path, map_location=map_location)
         # restore model and optimizer parameters
+        model_state = model_checkpoint["model_state"]
+        # signmodel load params from 
+        if self.cfg.get('input_data', 'feature') == 'feature' \
+            and self.train_config['resume_training'] == False:
+            new_model_state = {}
+            for k,v in model_state.items():
+                if 'signmodel' in k:
+                    new_model_state[k.replace('signmodel.','')] = v
+                    print('Rewrite {} -> {}'.format(k, k.replace('signmodel.','')))
+                else:
+                    new_model_state[k] = v
+            model_state = new_model_state
         try:
-            self.model.load_state_dict(model_checkpoint["model_state"])
+            self.model.load_state_dict(model_state)
         except:
-            neq_load_customized(self.model, model_checkpoint["model_state"], verbose=True)
+            neq_load_customized(self.model, model_state, verbose=True)
 
         if not reset_optimizer:
             self.optimizer.load_state_dict(model_checkpoint["optimizer_state"])
@@ -457,7 +469,7 @@ class TrainManager:
             self.logger.info("Reset scheduler.")
 
         # restore counts
-        if self.train_config["preemptible"]:
+        if self.train_config["resume_training"]:
             self.steps = model_checkpoint["steps"]
             self.total_txt_tokens = model_checkpoint["total_txt_tokens"]
             self.total_gls_tokens = model_checkpoint["total_gls_tokens"]
@@ -513,7 +525,7 @@ class TrainManager:
         )
 
         epoch_no = None
-        if self.train_config["preemptible"] and self.steps!=0:
+        if self.train_config["resume_training"] and self.steps!=0:
             self.start_epoch = self.steps//len(train_iter)
         else:
             self.start_epoch = 0
@@ -975,8 +987,9 @@ class TrainManager:
                         
                 if self.stop: 
                     break
-                
 
+            if epoch_no+1>=self.train_config.get('tmax',40) and self.train_config['scheduling']=='cosineannealing':
+                self.stop = True
             if self.stop:
                 if (
                     self.scheduler is not None
@@ -995,14 +1008,14 @@ class TrainManager:
                     )
                 break
 
-            self.logger.info(
-                "Epoch %3d: Total Training Recognition Loss %.2f "
-                " Total Training Translation Loss %.2f ",
-                epoch_no + 1,
-                epoch_recognition_loss if self.do_recognition else -1,
-                epoch_translation_loss if self.do_translation else -1,
-            )
-        else: #executed when the loop is not terminated by 'break'
+        self.logger.info(
+            "Epoch %3d: Total Training Recognition Loss %.2f "
+            " Total Training Translation Loss %.2f ",
+            epoch_no + 1,
+            epoch_recognition_loss if self.do_recognition else -1,
+            epoch_translation_loss if self.do_translation else -1,
+        )
+        if not self.stop: #executed when the loop is not terminated by 'break'
             self.logger.info("Training ended after %3d epochs.", epoch_no + 1)
         
 
@@ -1241,7 +1254,6 @@ class TrainManager:
     ) -> None:
         """
         Write current validation outputs to file in `self.model_dir.`
-
         :param hypotheses: list of strings
         """
         if sub_folder:
@@ -1275,9 +1287,19 @@ def train(cfg_file: str, preemptible: bool=False) -> None:
             cfg["training"]["reset_best_ckpt"] = False
             cfg["training"]["reset_scheduler"] = False
             cfg["training"]["reset_optimizer"] = False
+            cfg["training"]["resume_training"] = True
         cfg["training"]["preemptible"] = True
+        cfg["training"]["resume_training"] = False
     else:
         cfg["training"]["preemptible"] = False
+        cfg["training"]["resume_training"] = False
+
+    #load vocab
+    if os.path.isfile(cfg["training"].get("load_model","")):
+        root_dir = os.path.dirname(cfg["training"]["load_model"])
+        cfg['data']['gls_vocab'] = os.path.join(os.path.join(root_dir, 'gls.vocab'))
+        cfg['data']['txt_vocab'] = os.path.join(os.path.join(root_dir, 'txt.vocab'))
+        print('Load  vocab file from ', root_dir)
     input_data = cfg["data"].get('input_data', 'feature')
     # set the random seed
     set_seed(seed=cfg["training"].get("random_seed", 42))
@@ -1399,6 +1421,7 @@ def train(cfg_file: str, preemptible: bool=False) -> None:
     output_path = os.path.join(trainer.model_dir, output_name)
     logger = trainer.logger
     del trainer
+
     test(cfg_file, ckpt=ckpt, output_path=output_path, logger=logger)
 
 
