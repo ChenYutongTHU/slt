@@ -436,7 +436,7 @@ class TrainManager:
         # restore model and optimizer parameters
         model_state = model_checkpoint["model_state"]
         # signmodel load params from 
-        if self.cfg.get('input_data', 'feature') == 'feature' \
+        if self.cfg['data'].get('input_data', 'feature') == 'feature' \
             and self.train_config['resume_training'] == False:
             new_model_state = {}
             for k,v in model_state.items():
@@ -988,7 +988,7 @@ class TrainManager:
                 if self.stop: 
                     break
 
-            if epoch_no+1>=self.train_config.get('tmax',40) and self.train_config['scheduling']=='cosineannealing':
+            if epoch_no+1>=self.train_config.get('t_max',40) and self.train_config['scheduling']=='cosineannealing':
                 self.stop = True
             if self.stop:
                 if (
