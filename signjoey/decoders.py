@@ -475,6 +475,8 @@ class TransformerDecoder(Decoder):
         emb_dropout: float = 0.1,
         vocab_size: int = 1,
         freeze: bool = False,
+        tied_softmax: bool=False,
+        output_layer_size: int = 512,
         **kwargs
     ):
         """
@@ -495,6 +497,7 @@ class TransformerDecoder(Decoder):
         self._hidden_size = hidden_size
         self._output_size = vocab_size
         self.num_layers = num_layers
+        self.tied_softmax = tied_softmax
         # create num_layers decoder layers and put them in a list
         self.layers = nn.ModuleList(
             [
@@ -512,7 +515,17 @@ class TransformerDecoder(Decoder):
         self.layer_norm = nn.LayerNorm(hidden_size, eps=1e-6)
 
         self.emb_dropout = nn.Dropout(p=emb_dropout)
-        self.output_layer = nn.Linear(hidden_size, vocab_size, bias=False)
+        if self.tied_softmax:
+            print('txt output layer size {} != hidden size {}'.format(output_layer_size, hidden_size))
+            print('Create a mapping layer')
+            self.map2txt_output = nn.Sequential(
+                nn.Linear(hidden_size, output_layer_size),
+                nn.Dropout(dropout),
+            )
+            self.output_layer = nn.Linear(output_layer_size, vocab_size, bias=False)
+        else:
+            self.map2txt_output = nn.Identity()
+            self.output_layer = nn.Linear(hidden_size, vocab_size, bias=False)
 
         if freeze:
             freeze_params(self)
@@ -554,6 +567,7 @@ class TransformerDecoder(Decoder):
             attention['trg_trg_attention'].append(trg_trg_att) #B,H,T,T
             attention['trg_src_attention'].append(src_src_att) #B,H,T,T
         x = self.layer_norm(x)
+        x = self.map2txt_output(x)
         output = self.output_layer(x)
         output_attention = []
         for i in range(x.shape[0]):

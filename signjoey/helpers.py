@@ -33,7 +33,7 @@ def sparse_sample(batch_enc_op, batch_gls_prob, batch_mask, select_strategy='all
         return batch_enc_op, batch_mask
 
     batch_size = batch_enc_op.shape[0]
-    assert batch_size == 1, 'currently only support batch_size=1!'
+    #assert batch_size == 1, 'currently only support batch_size=1!'
     batch_selected_op = []
     batch_selected_op_len = []
     for b in range(batch_size):
@@ -114,10 +114,10 @@ def sparse_sample(batch_enc_op, batch_gls_prob, batch_mask, select_strategy='all
         op_len = op.shape[0]
         new_mask[oi, :, :op_len] = True
         if op_len < max_len:
-            padded = torch.tile(torch.zeros(
+            padded = torch.zeros(
                 [max_len-op_len, op.shape[1]],
                 dtype=op.dtype,
-                device=op.device))
+                device=op.device)
             op = torch.cat(
                 [op, padded],
                 dim=0)  # T',D
@@ -323,6 +323,9 @@ def load_config(path="configs/default.yaml") -> dict:
                 print('tokenizer={}, Rewrite feature_size to {}'.format(
                     cfg['model']['tokenizer']['architecture'],
                     512))            
+    elif cfg['data'].get('input_data','feature') == 'gloss':
+        cfg['training']['recognition_loss_weight'] = 0
+        cfg['training']['translation_loss_weight'] = 1
     else:
         name = cfg['data']['train']
         ind = name.find('block')

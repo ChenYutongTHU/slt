@@ -94,6 +94,7 @@ class Embeddings(nn.Module):
         vocab_size: int = 0,
         padding_idx: int = 1,
         freeze: bool = False,
+        output_dim: int = -1, #only used when loading mBART embedding where 1024 vs 512
         **kwargs
     ):
         """
@@ -129,6 +130,11 @@ class Embeddings(nn.Module):
             else:
                 self.scale_factor = math.sqrt(self.embedding_dim)
 
+        if output_dim>0 and output_dim!=self.embedding_dim:
+            print('output_dim {} != embedding_dim {} A linear layer is added'.format(output_dim, embedding_dim))
+            self.map = nn.Linear(embedding_dim, output_dim)
+        else:
+            self.map = nn.Identity()
         if freeze:
             freeze_params(self)
 
@@ -151,9 +157,9 @@ class Embeddings(nn.Module):
             x = self.activation(x)
 
         if self.scale:
-            return x * self.scale_factor
+            return self.map(x * self.scale_factor)
         else:
-            return x
+            return self.map(x)
 
     def __repr__(self):
         return "%s(embedding_dim=%d, vocab_size=%d)" % (

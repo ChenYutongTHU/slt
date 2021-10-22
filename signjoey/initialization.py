@@ -10,7 +10,30 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from torch.nn.init import _calculate_fan_in_and_fan_out
+import os
+from signjoey.helpers import freeze_params
 
+def initialize_embed(embedding, vocab, cfg={}, verbose=None):
+    if cfg=={}:
+        return
+    assert os.path.isfile(cfg['init_file']),cfg
+    load_embed = torch.load(cfg['init_file'])
+    with torch.no_grad():
+        for i in range(len(vocab)):
+            str = vocab.itos[i]
+            if str in load_embed:
+                embedding.lut.weight[i, :] = load_embed[str]
+            else:
+                print('Unknown vocab {} train from scratch'.format(str))
+                print(
+                    'Partly tune parameters are not supported now, please set freeze to false')
+    
+    if cfg['freeze']==True:
+        freeze_params(embedding)
+    if verbose:
+        print('Load pretrained {} embedding layer from {} freeze={}' .format(
+            verbose, cfg['init_file'], cfg['freeze']))
+    return
 
 def orthogonal_rnn_init_(cell: nn.RNNBase, gain: float = 1.0):
     """
@@ -141,6 +164,9 @@ def initialize_model(model: nn.Module, cfg: dict, txt_padding_idx: int) -> None:
         for name, p in model.named_parameters():
 
             if "txt_embed" in name:
+                if "lut" in name:
+                    embed_init_fn_(p)
+            if "gls_embed" in name:
                 if "lut" in name:
                     embed_init_fn_(p)
 

@@ -31,7 +31,7 @@ from torch import Tensor
 from typing import Union
 from signjoey.resnet import Resnet50
 from signjoey.models_3d.CoCLR.utils.utils import neq_load_customized
-from initialization import initialize_gloss_embed
+from initialization import initialize_gloss_embed, initialize_embed
 def get_loss_for_batch(
     model,
     batch: Batch,
@@ -67,7 +67,7 @@ def get_loss_for_batch(
             txt_mask=batch.txt_mask,
             output_attention=output_attention
             )
-    else:
+    elif input_data=='image':
         (decoder_outputs, gloss_probabilities, attention, encoder_outputs), batch.sgn, batch.sgn_mask, batch.sgn_lengths = model(
             sgn_img=batch.sgn_img,
             sgn_mask=batch.sgn_mask,
@@ -76,7 +76,15 @@ def get_loss_for_batch(
             txt_mask=batch.txt_mask,
             output_attention=output_attention
         )
-
+    elif input_data=='gloss':
+        decoder_outputs, _, attention, encoder_outputs = model(
+            sgn=batch.gls,
+            sgn_mask=batch.gls_mask,
+            sgn_lengths=batch.gls_lengths,
+            txt_input=batch.txt_input,
+            txt_mask=batch.txt_mask,
+            output_attention=output_attention
+        )
     do_recognition = recognition_loss_function!=None
     do_translation = translation_loss_function!=None
 
@@ -172,7 +180,8 @@ class SignModel(nn.Module):
         txt_vocab: TextVocabulary,
         do_recognition: bool = True,
         do_translation: bool = True,
-        sample_strategy: str='all'
+        sample_strategy: str='all',
+        input_data: str='feature'
     ):
         """
         Create a new encoder-decoder model
@@ -205,9 +214,12 @@ class SignModel(nn.Module):
         self.txt_pad_index = self.txt_vocab.stoi[PAD_TOKEN]
         self.txt_eos_index = self.txt_vocab.stoi[EOS_TOKEN]
 
+        self.gls_pad_index = self.gls_vocab.stoi[PAD_TOKEN]
+
         self.gloss_output_layer = gloss_output_layer
         self.do_recognition = do_recognition
         self.do_translation = do_translation
+        self.input_data = input_data
     
     def set_train(self, verbose=False):
         self.train()
@@ -416,10 +428,14 @@ class SignModel(nn.Module):
         :return: stacked_output: hypotheses for batch,
             stacked_attention_scores: attention scores for batch
         """
-
-        encoder_outputs = self.encode(
-            sgn=batch.sgn, sgn_mask=batch.sgn_mask, sgn_length=batch.sgn_lengths
-        )
+        if self.input_data=='gloss':
+            encoder_outputs = self.encode(
+                sgn=batch.gls, sgn_mask=batch.gls_mask, sgn_length=batch.gls_lengths
+            )
+        else:
+            encoder_outputs = self.encode(
+                sgn=batch.sgn, sgn_mask=batch.sgn_mask, sgn_length=batch.sgn_lengths
+            )
         if len(encoder_outputs) == 3:
             encoder_output, encoder_hidden, attention = encoder_outputs
         else:
@@ -483,11 +499,14 @@ class SignModel(nn.Module):
                     select_strategy='top1_maxprob' if self.sample_strategy == 'top1_random' else self.sample_strategy)
                 #print('after sample ', encoder_output.shape, sgn_mask.shape)
             else:
-                new_sgn_mask = batch.sgn_mask
+                if self.input_data=='gloss':
+                    new_sgn_mask = batch.gls_mask
+                else:
+                    new_sgn_mask = batch.sgn_mask
             if self.gloss_encoder:
                 encoder_output, encoder_hidden = self.gloss_encoder(
                     embed_src=encoder_output,
-                    src_length=batch.sgn_lengths, #unused
+                    src_length=None, #unused
                     output_attention=False,
                     mask=new_sgn_mask
                 )
@@ -746,9 +765,9 @@ def build_model(
     # build encoder
     enc_dropout = cfg["encoder"].get("dropout", 0.0)
     enc_emb_dropout = cfg["encoder"]["embeddings"].get("dropout", 0.1)
-    if 'gloss_embedding' in cfg:
+    if 'gls_embed' in cfg["encoder"]["embeddings"]:
         assert cfg["encoder"].get("type", "recurrent") == "transformer"
-        encoder_output_size = cfg["gloss_embedding"]["embedding_dim"]
+        encoder_output_size = cfg["encoder"]["embeddings"]['gls_embed']["embedding_dim"]
     else:
         encoder_output_size = cfg["encoder"].get("hidden_size", 512)
     if cfg["encoder"].get("type", "recurrent") == "transformer":
@@ -786,9 +805,9 @@ def build_model(
 
     if do_recognition:
         gloss_output_layer = nn.Linear(encoder.output_size, len(gls_vocab))
-        if 'gloss_embedding' in cfg:
-            if cfg["gloss_embedding"].get("freeze_mode", "all_tune")=='all_freeze':
-                freeze_params(gloss_output_layer)
+        # if 'gloss_embedding' in cfg:
+        #     if cfg["gloss_embedding"].get("freeze_mode", "all_tune")=='all_freeze':
+        #         freeze_params(gloss_output_layer)
     else:
         gloss_output_layer = None
 
@@ -799,6 +818,7 @@ def build_model(
             num_heads=cfg["decoder"]["num_heads"],
             vocab_size=len(txt_vocab),# 
             padding_idx=txt_padding_idx,
+            output_dim=cfg["decoder"]["hidden_size"]
         )
         dec_dropout = cfg["decoder"].get("dropout", 0.0)
         dec_emb_dropout = cfg["decoder"]["embeddings"].get("dropout", dec_dropout)
@@ -816,6 +836,8 @@ def build_model(
                 vocab_size=len(txt_vocab),
                 emb_size=txt_embed.embedding_dim,
                 emb_dropout=dec_emb_dropout,
+                tied_softmax=cfg.get("tied_softmax", False),
+                output_layer_size=txt_embed.embedding_dim if cfg.get("tied_softmax", False) else -1
             )
         else:
             decoder = RecurrentDecoder(
@@ -844,9 +866,25 @@ def build_model(
         do_translation=do_translation,
     )
 
+    # custom initialization of sign_model parameters
+    if cfg.get("initialize_model", True)==True:
+        initialize_model(sign_model, cfg, txt_padding_idx)
+    else:
+        print('Turn off initialize')
+    
+    if do_recognition:
+        if "gls_embed" in cfg['encoder']['embeddings']:
+            initialize_gloss_embed(sign_model.gloss_output_layer, #linear layer
+                                cfg['encoder']['embeddings']['gls_embed']['init_file'],
+                                    gls_vocab)
+
     if do_translation:
+        if 'txt_embed' in cfg['decoder']['embeddings']:
+            initialize_embed(sign_model.txt_embed, vocab=txt_vocab,
+                            cfg=cfg['decoder']['embeddings']['txt_embed'], verbose='txt')
         # tie softmax layer with txt embeddings
         if cfg.get("tied_softmax", False):
+            print('Tied softmax')
             # noinspection PyUnresolvedReferences
             if txt_embed.lut.weight.shape == sign_model.decoder.output_layer.weight.shape:
                 # (also) share txt embeddings and softmax layer:
@@ -859,12 +897,6 @@ def build_model(
                     "The decoder must be a Transformer."
                 )
 
-    # custom initialization of sign_model parameters
-    initialize_model(sign_model, cfg, txt_padding_idx)
-    if "gloss_embedding" in cfg:
-        initialize_gloss_embed(sign_model.gloss_output_layer, #linear layer
-            cfg["gloss_embedding"]['init_file'],
-            gls_vocab)
 
     if input_data == 'feature':
         return sign_model

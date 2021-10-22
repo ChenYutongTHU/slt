@@ -12,7 +12,6 @@ warnings.filterwarnings("ignore")
 from torch.nn.parallel import DistributedDataParallel as DDP, distributed
 import torch
 torch.backends.cudnn.deterministic = True
-
 import argparse
 import numpy as np
 import os, sys
@@ -22,6 +21,7 @@ import queue
 sys.path.append(os.getcwd())#slt dir
 import signjoey
 from signjoey.model import build_model
+from signjoey.gloss2text_model import build_gloss2text_model
 from signjoey.batch import Batch, Batch_from_examples
 from signjoey.helpers import (
     log_data_info,
@@ -66,7 +66,7 @@ class TrainManager:
         self.use_amp = config['training'].get('use_amp',False)
         self.train_config = config['training']
         self.input_data = config["data"].get("input_data", "feature")
-        if self.input_data =='feature':
+        if self.input_data in ['feature','gloss']:
             self.tokenizer_type = None
         else:
             self.tokenizer_type = config['model']['tokenizer']['architecture']
@@ -97,7 +97,7 @@ class TrainManager:
         # input
         self.feature_size = (
             sum(config["data"]["feature_size"])
-            if isinstance(config["data"]["feature_size"], list)
+            if isinstance(config["data"].get("feature_size",849), list)
             else config["data"]["feature_size"]
         )
         self.dataset_version = config["data"].get("version", "phoenix_2014_trans")
@@ -105,6 +105,7 @@ class TrainManager:
         # model
         self.model = model
         self.txt_pad_index = self.model.txt_pad_index
+        self.gls_pad_index = self.model.gls_pad_index
         self.txt_bos_index = self.model.txt_bos_index
         self._log_parameters_list()
         # Check if we are doing only recognition or only translation or both
@@ -500,6 +501,7 @@ class TrainManager:
                     is_train=True,
                     example_list=x,
                     txt_pad_index=self.txt_pad_index,
+                    gls_pad_index=self.gls_pad_index,
                     sgn_dim=self.feature_size,
                     dataset=train_data,
                     input_data=self.input_data,
@@ -657,7 +659,7 @@ class TrainManager:
                         log_out += "Txt Tokens per Sec: {:8.0f} || ".format(
                             elapsed_txt_tokens / elapsed
                         )
-                    if self.input_data=='feature':
+                    if self.input_data in ['feature','gloss']:
                         log_out += "Lr: {:.6f}".format(self.optimizer.param_groups[0]["lr"])
                     else:
                         log_out += "signmodel Lr: {:.6f} ".format(self.optimizer.param_groups[0]["lr"])
@@ -688,6 +690,7 @@ class TrainManager:
                         dataset_version=self.dataset_version,
                         sgn_dim=self.feature_size,
                         txt_pad_index=self.txt_pad_index,
+                        gls_pad_index=self.gls_pad_index,
                         # Recognition Parameters
                         do_recognition=self.do_recognition,
                         recognition_loss_function=self.recognition_loss_function
@@ -1334,7 +1337,6 @@ def train(cfg_file: str, preemptible: bool=False) -> None:
             do_translation=do_translation,
         )
     elif input_data == 'image':
-
         model = build_model(
             cfg=cfg["model"],
             gls_vocab=gls_vocab,
@@ -1346,7 +1348,14 @@ def train(cfg_file: str, preemptible: bool=False) -> None:
             do_translation=do_translation,
             input_data=input_data
         )
-
+    elif input_data == 'gloss':
+        model = build_gloss2text_model(
+            cfg=cfg["model"],
+            gls_vocab=gls_vocab,
+            txt_vocab=txt_vocab,
+            gls_embed_cfg=cfg["model"]['encoder']['embeddings'].get('gls_embed',{}),
+            txt_embed_cfg=cfg["model"]['decoder']['embeddings'].get('txt_embed', {}),
+        )
     
     
     # for training management, e.g. early stopping and model selection
@@ -1365,7 +1374,7 @@ def train(cfg_file: str, preemptible: bool=False) -> None:
             total_params = sum(p.numel() for p in getattr(model, sub).parameters())
             trainer.logger.info('# {} parameters = {}'.format(sub, total_params))
             trainer.logger.info('# {} trainable parameters = {}'.format(sub, total_params_trainable))         
-
+    
     # DDP
     if distributed:
         trainer.logger.info('Distributed training, world_size={}, local_rank={}, \

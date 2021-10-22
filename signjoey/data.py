@@ -50,19 +50,19 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
     """
 
     data_path = data_cfg.get("data_path", "./data")
-    input_data = data_cfg.get("input_data", "feature")
+    input_data = data_cfg.get("input_data", "feature") # feature, image, gloss
     downsample = data_cfg.get("downsample",1)
     if isinstance(data_cfg["train"], list):
         train_paths = [os.path.join(data_path, x) for x in data_cfg["train"]]
         dev_paths = [os.path.join(data_path, x) for x in data_cfg["dev"]]
         test_paths = [os.path.join(data_path, x) for x in data_cfg["test"]]
-        pad_feature_size = sum(data_cfg["feature_size"])
+        pad_feature_size = sum(data_cfg.get("feature_size", 849))
 
     else:
         train_paths = os.path.join(data_path, data_cfg["train"])
         dev_paths = os.path.join(data_path, data_cfg["dev"])
         test_paths = os.path.join(data_path, data_cfg["test"])
-        pad_feature_size = data_cfg["feature_size"]
+        pad_feature_size = data_cfg.get("feature_size", 849)
 
     level = data_cfg["level"]
     txt_lowercase = data_cfg["txt_lowercase"]
@@ -99,6 +99,7 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
     )
 
     gls_field = data.Field(
+        eos_token=EOS_TOKEN if data_cfg.get('input_data','feature')=='gloss' else None,
         pad_token=PAD_TOKEN,
         tokenize=tokenize_text,
         batch_first=True,

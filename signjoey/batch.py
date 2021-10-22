@@ -149,7 +149,8 @@ class Batch:
         if self.sgn!=None:
             self.sgn = self.sgn.cuda()
         else:
-            self.sgn_img = self.sgn_img.cuda()
+            if self.sgn_img!=None:
+                self.sgn_img = self.sgn_img.cuda()
         if self.sgn_mask!=None:
             self.sgn_mask = self.sgn_mask.cuda()
 
@@ -157,6 +158,10 @@ class Batch:
             self.txt = self.txt.cuda()
             self.txt_mask = self.txt_mask.cuda()
             self.txt_input = self.txt_input.cuda()
+        
+        if self.input_data == 'gloss':
+            self.gls = self.gls.cuda()
+            self.gls_mask = self.gls_mask.cuda()
 
     def sort_by_sgn_lengths(self):
         """
@@ -164,8 +169,12 @@ class Batch:
 
         :return:
         """
-        if self.input_data=='image':
+
+        if self.input_data == 'image':
             rev_index = list(range(0, len(self.sgn_lengths)))
+            return rev_index
+        if self.input_data == 'gloss':
+            rev_index = list(range(0, len(self.gls_lengths)))
             return rev_index
             #don't sort
 
@@ -202,6 +211,7 @@ class Batch_from_examples(Batch):
         self,
         example_list,
         txt_pad_index,
+        gls_pad_index,
         sgn_dim,
         dataset, 
         input_data: str = 'feature',
@@ -217,7 +227,7 @@ class Batch_from_examples(Batch):
         random_frame_subsampling: bool = None,
         random_frame_masking_ratio: float = None,
         transform_mode: str='train',
-        data_cfg: dict=None
+        data_cfg: dict=None,
     ):
         # Sequence Information
         torch_batch = torchtext.data.Batch(data=example_list, dataset=dataset, device=None)
@@ -228,6 +238,7 @@ class Batch_from_examples(Batch):
         self.tokenizer_type = tokenizer_type
         self.downsample = downsample
 
+        self.input_data = input_data
         if input_data == 'feature':
             self.sgn, self.sgn_lengths = torch_batch.sgn
             # Here be dragons
@@ -305,7 +316,7 @@ class Batch_from_examples(Batch):
                 self.sgn_lengths, dtype=torch.long)  # B,
             self.sgn_mask = torch.tensor(self.sgn_mask, dtype=torch.bool).unsqueeze(1)
             self.sgn_img = torch.stack(self.sgn_img, dim=0) #(l1+l2+l3+..l4), C,H,W
-        else:
+        elif input_data == 'image':
             assert downsample==1, (downsample)
             # 3d preprocess, adapted from Menghan's code
             dataset_info = dict()
@@ -367,7 +378,6 @@ class Batch_from_examples(Batch):
         self.num_txt_tokens = None
         self.num_gls_tokens = None
         self.use_cuda = use_cuda
-        self.num_seqs = self.sgn_lengths.size(0)
 
         if hasattr(torch_batch, "txt"):
             txt, txt_lengths = torch_batch.txt
@@ -384,7 +394,13 @@ class Batch_from_examples(Batch):
             self.gls, self.gls_lengths = torch_batch.gls
             self.num_gls_tokens = self.gls_lengths.sum().detach().clone().numpy()
 
-
+        if input_data == 'gloss':
+            self.sgn, self.sgn_mask = None, None
+            self.sgn_img = None
+            self.gls_mask = (self.gls != gls_pad_index).unsqueeze(1)
+            # print(self.gls)  #B,L (pad with 2)
+            # print(self.gls_lengths) #B
+        self.num_seqs = self.gls_lengths.size(0)
         # if use_cuda:
         #     self._make_cuda()
 

@@ -32,6 +32,7 @@ from signjoey.helpers import (
 )
 from signjoey.metrics import bleu, chrf, rouge, wer_list
 from signjoey.model import build_model, SignModel, get_loss_for_batch
+from signjoey.gloss2text_model import build_gloss2text_model
 from signjoey.batch import Batch, Batch_from_examples
 from signjoey.data import load_data, make_data_iter
 from signjoey.vocabulary import PAD_TOKEN, SIL_TOKEN
@@ -75,6 +76,7 @@ def validate_on_data(
     translation_max_output_length: int,
     level: str,
     txt_pad_index: int,
+    gls_pad_index: int,
     recognition_beam_size: int = 1, # or list
     translation_beam_size: int = 1,
     translation_beam_alpha: int = -1,
@@ -141,7 +143,7 @@ def validate_on_data(
     if output_attention:
         assert int(os.environ['WORLD_SIZE'])==1, os.environ['WORLD_SIZE']
     input_data = cfg['data'].get('input_data', 'feature')
-    if input_data =='feature':
+    if input_data in ['feature','gloss']:
         tokenizer_type = None
     else:
         tokenizer_type = cfg['model']['tokenizer']['architecture']
@@ -152,6 +154,7 @@ def validate_on_data(
             is_train=False,
             example_list=x,
             txt_pad_index=txt_pad_index,
+            gls_pad_index=gls_pad_index,
             sgn_dim=sgn_dim,
             dataset=data,
             input_data=cfg['data'].get('input_data','feature'),
@@ -561,6 +564,12 @@ def test(
             do_translation=do_translation,
             input_data=input_data
         )
+    elif input_data=='gloss':
+        model = build_gloss2text_model(
+            cfg=cfg["model"],
+            gls_vocab=gls_vocab,
+            txt_vocab=txt_vocab,
+        )
 
     model.load_state_dict(model_checkpoint["model_state"])
     logger.info('Load Model state dict from {}'.format(ckpt))
@@ -633,6 +642,7 @@ def test(
             if isinstance(cfg["data"]["feature_size"], list)
             else cfg["data"]["feature_size"],
             txt_pad_index=txt_vocab.stoi[PAD_TOKEN],
+            gls_pad_index=gls_vocab.stoi[PAD_TOKEN],
             # Recognition Parameters
             do_recognition=do_recognition,
             recognition_loss_function=recognition_loss_function if do_recognition else None,
@@ -719,6 +729,7 @@ def test(
                     translation_loss_weight=1,
                     translation_max_output_length=translation_max_output_length,
                     txt_pad_index=txt_vocab.stoi[PAD_TOKEN],
+                    gls_pad_index=gls_vocab.stoi[PAD_TOKEN],
                     translation_beam_size=tbw,
                     translation_beam_alpha=ta,
                     frame_subsampling_ratio=frame_subsampling_ratio,
@@ -828,6 +839,7 @@ def test(
         if isinstance(cfg["data"]["feature_size"], list)
         else cfg["data"]["feature_size"],
         txt_pad_index=txt_vocab.stoi[PAD_TOKEN],
+        gls_pad_index=gls_vocab.stoi[PAD_TOKEN],
         do_recognition=do_recognition,
         recognition_loss_function=recognition_loss_function if do_recognition else None,
         recognition_loss_weight=1 if do_recognition else None,
