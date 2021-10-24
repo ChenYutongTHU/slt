@@ -1,4 +1,5 @@
 # coding: utf-8
+from json import encoder
 import os
 from signjoey.model_3d import backbone_3D
 from utils_3d import get_premodel_weight, pre_task
@@ -58,6 +59,10 @@ def get_loss_for_batch(
     # pylint: disable=unused-variable
 
     # Do a forward pass
+    translation_loss = None
+    model_name = model.__class__.__name__
+    if model_name == 'DistributedDataParallel':
+        model_name = model.module.__class__.__name__
     if input_data=='feature':
         decoder_outputs, gloss_probabilities, attention, encoder_outputs = model(
             sgn=batch.sgn,
@@ -77,14 +82,28 @@ def get_loss_for_batch(
             output_attention=output_attention
         )
     elif input_data=='gloss':
-        decoder_outputs, _, attention, encoder_outputs = model(
-            sgn=batch.gls,
-            sgn_mask=batch.gls_mask,
-            sgn_lengths=batch.gls_lengths,
-            txt_input=batch.txt_input,
-            txt_mask=batch.txt_mask,
-            output_attention=output_attention
-        )
+        if model_name == 'SignModel':
+            decoder_outputs, _, attention, encoder_outputs = model(
+                sgn=batch.gls,
+                sgn_mask=batch.gls_mask,
+                sgn_lengths=batch.gls_lengths,
+                txt_input=batch.txt_input,
+                txt_mask=batch.txt_mask,
+                output_attention=output_attention
+            )
+        elif model_name == 'huggingface_transformer':
+            output_dict = model(
+                sgn=batch.gls,
+                sgn_mask=batch.gls_mask,
+                sgn_lengths=batch.gls_lengths,
+                txt_input=batch.txt_input,
+                txt_mask=batch.txt_mask,
+                output_attention=True
+            )
+            translation_loss = output_dict['loss'] # default 'mean' token-level (-100 is ignored)
+            encoder_outputs = output_dict['encoder_last_hidden_state'] #B,L,H
+            attention = output_dict['encoder_attentions'] #B,H,L,L
+
     do_recognition = recognition_loss_function!=None
     do_translation = translation_loss_function!=None
 
@@ -103,7 +122,7 @@ def get_loss_for_batch(
     else:
         recognition_loss = None
 
-    if do_translation:
+    if do_translation and translation_loss==None:
         assert decoder_outputs is not None
         word_outputs, _, _, _ = decoder_outputs
         # Calculate Translation Loss
@@ -112,7 +131,7 @@ def get_loss_for_batch(
             translation_loss_function(txt_log_probs, batch.txt)
             * translation_loss_weight
         )
-    else:
+    elif not do_translation:
         translation_loss = None
 
 

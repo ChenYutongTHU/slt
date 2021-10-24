@@ -300,7 +300,6 @@ class TrainManager:
             for name, m in self.model.module.named_modules():   
                 classname = m.__class__.__name__
                 if classname.find('BatchNorm') != -1:
-                    print(name)
                     m.bn_name = name
                     m.register_forward_pre_hook(compute_bn_stats)           
 
@@ -1062,17 +1061,20 @@ class TrainManager:
 
             # normalize translation loss
             if self.do_translation:
-                if self.translation_normalization_mode == "batch":
-                    txt_normalization_factor = batch.num_seqs
-                elif self.translation_normalization_mode == "tokens":
-                    txt_normalization_factor = batch.num_txt_tokens
+                if self.cfg['data']['input_data']=='gloss' and self.cfg['model']['type']=='mBart':
+                    normalized_translation_loss = translation_loss #No need to normalize (token level)
                 else:
-                    raise NotImplementedError("Only normalize by 'batch' or 'tokens'")
+                    if self.translation_normalization_mode == "batch":
+                        txt_normalization_factor = batch.num_seqs
+                    elif self.translation_normalization_mode == "tokens":
+                        txt_normalization_factor = batch.num_txt_tokens
+                    else:
+                        raise NotImplementedError("Only normalize by 'batch' or 'tokens'")
 
-                # division needed since loss.backward sums the gradients until updated
-                normalized_translation_loss = translation_loss / (
-                    txt_normalization_factor * self.batch_multiplier
-                )
+                    # division needed since loss.backward sums the gradients until updated
+                    normalized_translation_loss = translation_loss / (
+                        txt_normalization_factor * self.batch_multiplier
+                    )
             else:
                 normalized_translation_loss = 0
 

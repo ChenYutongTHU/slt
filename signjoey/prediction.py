@@ -183,7 +183,7 @@ def validate_on_data(
         print('Set module.set_train()')
         model.module.set_train()
 
-
+    model_name = model.module.__class__.__name__
     # don't track gradients during validation
     with torch.no_grad():
         all_gls_outputs = [] if (type(recognition_beam_size)==int or do_recognition==False) else defaultdict(list)
@@ -202,7 +202,7 @@ def validate_on_data(
         total_num_seqs = 0
         split_gls = []
         split_txt = []
-        for batch in iter(valid_iter):
+        for batch in tqdm(iter(valid_iter)):
             split_gls.append(batch.gls)
             split_txt.append(batch.txt)
 
@@ -239,7 +239,7 @@ def validate_on_data(
 
                 (
                     batch_gls_predictions,
-                    batch_txt_predictions,
+                    batch_txt_predictions, #already decoded in mBart
                     batch_attention_scores,
                     batch_gls_prob #B, T, C
                 ) = model.module.run_batch(
@@ -277,7 +277,11 @@ def validate_on_data(
                         )
                 all_gls_probs.extend([batch_gls_prob[sri] for sri in sort_reverse_index])# (batch_gls_prob)
             if do_translation:
-                all_txt_outputs.extend(batch_txt_predictions[sort_reverse_index])
+                if model_name=='huggingface_transformer':
+                    for si in sort_reverse_index:
+                        all_txt_outputs.append(batch_txt_predictions[si])
+                else:
+                    all_txt_outputs.extend(batch_txt_predictions[sort_reverse_index])
             if batch_attention_scores:
                 all_attention_scores.extend(
                     [batch_attention_scores[si] for si in sort_reverse_index]
@@ -356,14 +360,20 @@ def validate_on_data(
             valid_translation_loss = -1
             valid_ppl = -1
         # decode back to symbols
-        decoded_txt = model.module.txt_vocab.arrays_to_sentences(arrays=all_txt_outputs)
+        if model_name=='huggingface_transformer':
+            decoded_txt = all_txt_outputs
+        else:
+            decoded_txt = model.module.txt_vocab.arrays_to_sentences(arrays=all_txt_outputs)
         # evaluate with metric on full data_splitset
         join_char = " " if level in ["word", "bpe"] else ""
         # Construct text sequences for metrics
         data_split_txt = [t for ti, t in enumerate(
             data.txt) if ti in split_indices]
         txt_ref = [join_char.join(t) for t in data_split_txt]
-        txt_hyp = [join_char.join(t) for t in decoded_txt]
+        if model_name=='huggingface_transformer':
+            txt_hyp = decoded_txt
+        else:
+            txt_hyp = [join_char.join(t) for t in decoded_txt]
         # post-process
         if level == "bpe":
             txt_ref = [bpe_postprocess(v) for v in txt_ref]
@@ -762,7 +772,7 @@ def test(
                     dev_best_translation_result = dev_translation_results[tbw][ta]
                     logger.info(
                         "[DEV] partition [Translation] results:\n\t"
-                        "New Best Translation Beam Size: %d and Alpha: %d\n\t"
+                        "New Best Translation Beam Size: %d and Alpha: %.2f\n\t"
                         "BLEU-4 %.2f\t(BLEU-1: %.2f,\tBLEU-2: %.2f,\tBLEU-3: %.2f,\tBLEU-4: %.2f)\n\t"
                         "CHRF %.2f\t"
                         "ROUGE %.2f",
@@ -790,7 +800,7 @@ def test(
     logger.info(
         "[DEV] partition [Recognition & Translation] results:\n\t"
         "Best CTC Decode Beam Size: %d\n\t"
-        "Best Translation Beam Size: %d and Alpha: %d\n\t"
+        "Best Translation Beam Size: %d and Alpha: %.2f\n\t"
         "WER %3.2f\t(DEL: %3.2f,\tINS: %3.2f,\tSUB: %3.2f)\n\t"
         "BLEU-4 %.2f\t(BLEU-1: %.2f,\tBLEU-2: %.2f,\tBLEU-3: %.2f,\tBLEU-4: %.2f)\n\t"
         "CHRF %.2f\t"
@@ -863,7 +873,7 @@ def test(
     logger.info(
         "[TEST] partition [Recognition & Translation] results:\n\t"
         "Best CTC Decode Beam Size: %d\n\t"
-        "Best Translation Beam Size: %d and Alpha: %d\n\t"
+        "Best Translation Beam Size: %d and Alpha: %.2f\n\t"
         "WER %3.2f\t(DEL: %3.2f,\tINS: %3.2f,\tSUB: %3.2f)\n\t"
         "BLEU-4 %.2f\t(BLEU-1: %.2f,\tBLEU-2: %.2f,\tBLEU-3: %.2f,\tBLEU-4: %.2f)\n\t"
         "CHRF %.2f\t"

@@ -1,7 +1,7 @@
 from json import encoder
 from signjoey import decoders
 from signjoey import embeddings
-from transformers import MBartForConditionalGeneration, MBartTokenizer
+from transformers import MBartForConditionalGeneration, MBartTokenizer, MBartConfig
 import torch
 import torch.nn as nn
 import os, numpy as np
@@ -15,6 +15,7 @@ from signjoey.vocabulary import (
     BOS_TOKEN,
 )
 from signjoey.model import SignModel
+from signjoey.PLM import huggingface_transformer
 from signjoey.encoders import TransformerEncoder
 from signjoey.decoders import TransformerDecoder
 from signjoey.embeddings import Embeddings
@@ -23,20 +24,27 @@ from signjoey.helpers import freeze_params
 
 
 
-
 def build_gloss2text_model(
     cfg: dict,
     gls_vocab: GlossVocabulary,
     txt_vocab: TextVocabulary,
-    pretrained_dir: str=None,
     gls_embed_cfg: dict={},
     txt_embed_cfg: dict={},
     **kwargs):
 
-    if cfg.get('type','mBART')=='mBART': 
+    if cfg.get('type','mBart')=='mBart': 
         tokenizer = MBartTokenizer.from_pretrained(
-            pretrained_dir, src_lang='de_DE', trg_lang='de_DE')
-        model = MBartForConditionalGeneration.from_pretrained(pretrained_dir)
+            cfg['pretrained_dir'], tgt_lang='de_DE')
+        plm_model = MBartForConditionalGeneration.from_pretrained(cfg['pretrained_dir'])
+        tokenizer.lang_code_to_id['de_DGS'] = 30
+        model = huggingface_transformer(
+            plm_type='mBart', 
+            plm=plm_model, 
+            tokenizer=tokenizer, 
+            gls_vocab=gls_vocab, txt_vocab=txt_vocab,
+            old2new_file=os.path.join(cfg['pretrained_dir'], 'old2new_vocab.pkl'),
+            **cfg.get('mbart_config',{})) #old2new_file, freeze_embed, src_lang
+
     elif cfg.get('type', 'mBART') == 'Transformer':
         # three layer transformer
         txt_padding_idx = txt_vocab.stoi[PAD_TOKEN]
