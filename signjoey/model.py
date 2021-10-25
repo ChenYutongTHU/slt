@@ -91,6 +91,19 @@ def get_loss_for_batch(
                 txt_mask=batch.txt_mask,
                 output_attention=output_attention
             )
+        elif model_name.lower() == 'transformer_spm':
+            #rewrite batch.txt! use new_id
+            outputs, batch.txt = model(
+                sgn=batch.gls,
+                sgn_mask=batch.gls_mask,
+                sgn_lengths=batch.gls_lengths,
+                txt_input=batch.txt_input,
+                txt_mask=batch.txt_mask,
+                output_attention=output_attention,
+                name = batch.sequence
+            )
+            decoder_outputs, _, attention, encoder_outputs = outputs
+
         elif model_name == 'huggingface_transformer':
             output_dict = model(
                 sgn=batch.gls,
@@ -98,7 +111,8 @@ def get_loss_for_batch(
                 sgn_lengths=batch.gls_lengths,
                 txt_input=batch.txt_input,
                 txt_mask=batch.txt_mask,
-                output_attention=True
+                output_attention=True,
+                name=batch.sequence
             )
             translation_loss = output_dict['loss'] # default 'mean' token-level (-100 is ignored)
             encoder_outputs = output_dict['encoder_last_hidden_state'] #B,L,H
@@ -127,6 +141,16 @@ def get_loss_for_batch(
         word_outputs, _, _, _ = decoder_outputs
         # Calculate Translation Loss
         txt_log_probs = F.log_softmax(word_outputs, dim=-1)
+        # if 'dev/28May_2010_Friday_tagesschau-7496' in batch.sequence:
+        #     # print('get_loss')
+        #     # print(txt_log_probs.shape)
+        #     # print('gls input')
+        #     # print(batch.gls)
+        #     # print(batch.gls_mask)
+        #     print('txt label')
+        #     print(batch.txt)
+        #     print('txt predict')
+        #     print(torch.argmax(txt_log_probs, dim=-1))
         translation_loss = (
             translation_loss_function(txt_log_probs, batch.txt)
             * translation_loss_weight

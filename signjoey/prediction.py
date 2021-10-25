@@ -277,7 +277,7 @@ def validate_on_data(
                         )
                 all_gls_probs.extend([batch_gls_prob[sri] for sri in sort_reverse_index])# (batch_gls_prob)
             if do_translation:
-                if model_name=='huggingface_transformer':
+                if model_name.lower() in ['huggingface_transformer', 'transformer_spm']:
                     for si in sort_reverse_index:
                         all_txt_outputs.append(batch_txt_predictions[si])
                 else:
@@ -360,7 +360,7 @@ def validate_on_data(
             valid_translation_loss = -1
             valid_ppl = -1
         # decode back to symbols
-        if model_name=='huggingface_transformer':
+        if model_name.lower() in ['huggingface_transformer','transformer_spm']:
             decoded_txt = all_txt_outputs
         else:
             decoded_txt = model.module.txt_vocab.arrays_to_sentences(arrays=all_txt_outputs)
@@ -370,7 +370,7 @@ def validate_on_data(
         data_split_txt = [t for ti, t in enumerate(
             data.txt) if ti in split_indices]
         txt_ref = [join_char.join(t) for t in data_split_txt]
-        if model_name=='huggingface_transformer':
+        if model_name.lower() in ['huggingface_transformer', 'transformer_spm']:
             txt_hyp = decoded_txt
         else:
             txt_hyp = [join_char.join(t) for t in decoded_txt]
@@ -381,6 +381,8 @@ def validate_on_data(
         assert len(txt_ref) == len(txt_hyp)
 
         # TXT Metrics
+        #print('ref ', txt_ref)
+        #print('hyp ', txt_hyp)
         txt_bleu = bleu(references=txt_ref, hypotheses=txt_hyp)
         txt_chrf = chrf(references=txt_ref, hypotheses=txt_hyp)
         txt_rouge = rouge(references=txt_ref, hypotheses=txt_hyp)
@@ -627,7 +629,8 @@ def test(
             translation_loss_function.cuda()
 
     # NOTE (Cihan): Currently Hardcoded to be 0 for TensorFlow decoding
-    assert model.module.gls_vocab.stoi[SIL_TOKEN] == 0
+    if do_recognition:
+        assert model.module.gls_vocab.stoi[SIL_TOKEN] == 0
 
     if do_recognition:
         # Dev Recognition CTC Beam Search Results

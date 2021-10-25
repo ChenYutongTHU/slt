@@ -192,7 +192,7 @@ def transformer_greedy(
             final_att_scores = att_scores #[{'',''},{'',''}]
             break
 
-    ys = ys[:, 1:]  # remove BOS-symbol #B,T
+    ys = ys[:, 1:]  # remove BOS-symbol #B,T !!
     return ys.detach().cpu().numpy(), final_att_scores
 
 
