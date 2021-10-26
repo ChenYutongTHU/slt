@@ -20,6 +20,7 @@ from signjoey.helpers import (
 )
 from torch import Tensor
 from collections import defaultdict
+from signjoey.loss import XentLoss
 class transformer_spm(nn.Module):
     def __init__(self,
         model,
@@ -246,7 +247,8 @@ class huggingface_transformer(nn.Module):
         freeze_embed: bool=False,
         src_lang: str='de_DE',
         from_scratch: bool=False,
-        loss_level: str='token'
+        loss_level: str='token',
+        label_smoothing: float=0,
         ):
         super().__init__()
         self.plm_type = plm_type #mBart
@@ -255,6 +257,13 @@ class huggingface_transformer(nn.Module):
         tokenizer.lang_code_to_id['de_DGS'] = 30
         self.tokenizer = tokenizer
         self.loss_level = loss_level
+        self.label_smoothing = label_smoothing
+        self.ignore_index = self.tokenizer.pad_token_id
+        self.translation_loss_fun = XentLoss(
+            pad_index=self.tokenizer.pad_token_id,  # ignore
+            smoothing=self.label_smoothing)
+        #input (log_probs, targets)
+
         self.gls_vocab = gls_vocab
         self.gls_pad_index = gls_vocab.stoi[PAD_TOKEN] 
         self.txt_vocab = txt_vocab #itos
@@ -324,7 +333,10 @@ class huggingface_transformer(nn.Module):
                 return_length=True,
                 return_tensors="pt")
         labels['input_ids'] = self.map_old2new(labels['input_ids'])
-        decoder_input_ids, label_input_ids = shift_tokens_right(labels['input_ids'].clone(), self.tokenizer.pad_token_id) #[lang, ]
+        decoder_input_ids, label_input_ids = shift_tokens_right(
+            labels['input_ids'].clone(), 
+            self.tokenizer.pad_token_id,
+            ignore_index=self.ignore_index) #[lang, ]
         decoder_attention_mask = labels['attention_mask'] #attention mask keeps the same after shifting
         return label_input_ids.to(device), decoder_input_ids.to(device), decoder_attention_mask.to(device)
 
@@ -458,14 +470,17 @@ class huggingface_transformer(nn.Module):
             **inputs,
             return_dict=True,
             output_attentions=output_attention)
-        if self.loss_level=='sentence':
-            batch_size = output_dict['logits'].shape[0]
-            loss_fct = torch.nn.CrossEntropyLoss(reduction='sum')
-            masked_lm_loss = loss_fct(
-                output_dict['logits'].view(-1, self.plm.config.vocab_size), 
-                inputs['labels'].view(-1))
-            output_dict['loss'] = masked_lm_loss/batch_size
+        assert self.loss_level=='sentence', self.loss_level
+        batch_size = output_dict['logits'].shape[0]
+        #B, T, L
+        log_prob = torch.nn.functional.log_softmax(output_dict['logits'], dim=-1)
+        batch_loss_sum = self.translation_loss_fun(
+            log_probs=log_prob,
+            targets=inputs['labels']
+        ) 
+        output_dict['loss'] = batch_loss_sum/batch_size
         #logits 1, t,v
+        '''
         if 0:
             loss_fct = torch.nn.CrossEntropyLoss(reduction='sum')
             logits = output_dict['logits']
@@ -506,7 +521,7 @@ class huggingface_transformer(nn.Module):
             print('loss computed in huggingface')
             print(output_dict['loss'])
             input()
-        
+        '''
         #Let's get sth crazy!
         #print(output_dict.keys()) loss, logits, past_key_values, encoder_last_hiddenstates
         return output_dict

@@ -45,7 +45,15 @@ def build_gloss2text_model(
     if cfg.get('type','mBart')=='mBart': 
         tokenizer = MBartTokenizer.from_pretrained(
             cfg['pretrained_dir'], tgt_lang='de_DE')
-        plm_model = MBartForConditionalGeneration.from_pretrained(cfg['pretrained_dir'])
+        if 'overwrite_mbart_cfg' in cfg:
+            print('Overwrite mbart cfg')
+            print(cfg['overwrite_mbart_cfg'])
+        else:
+            cfg['overwrite_mbart_cfg'] = {}
+        plm_model = MBartForConditionalGeneration.from_pretrained(
+            cfg['pretrained_dir'],
+            **cfg['overwrite_mbart_cfg']
+            )
         tokenizer.lang_code_to_id['de_DGS'] = 30
         model = huggingface_transformer(
             plm_type='mBart', 

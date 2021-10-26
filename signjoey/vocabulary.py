@@ -151,7 +151,7 @@ class GlossVocabulary(Vocabulary):
         :param file: file to load vocabulary from
         """
         super().__init__()
-        self.specials = [SIL_TOKEN, UNK_TOKEN, PAD_TOKEN]
+        self.specials = [SIL_TOKEN, UNK_TOKEN, PAD_TOKEN, EOS_TOKEN]
         self.DEFAULT_UNK_ID = lambda: 1
         self.stoi = defaultdict(self.DEFAULT_UNK_ID)
 
