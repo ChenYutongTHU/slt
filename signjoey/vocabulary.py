@@ -45,7 +45,15 @@ class Vocabulary:
         with open(file, "r", encoding="utf-8") as open_file:
             for line in open_file:
                 tokens.append(line.strip("\n"))
+        self.new_specials = []
+        for s in self.specials:
+            if not s in tokens:
+                print('special tokens {} not in loaded vocab file'.format(s))
+            else:
+                self.new_specials.append(s)
+        self.specials = self.new_specials
         self._from_list(tokens)
+        assert len(self.stoi) == len(self.itos)        
 
     def __str__(self) -> str:
         return self.stoi.__str__()

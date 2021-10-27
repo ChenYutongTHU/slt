@@ -1061,7 +1061,7 @@ class TrainManager:
 
             # normalize translation loss
             if self.do_translation:
-                if self.cfg['data']['input_data']=='gloss' and self.cfg['model']['type']=='mBart':
+                if self.cfg['data'].get('input_data','feature')=='gloss' and self.cfg['model'].get('type','transformer')=='mBart':
                     normalized_translation_loss = translation_loss #No need to normalize (token level)
                 else:
                     if self.translation_normalization_mode == "batch":
