@@ -13,6 +13,7 @@ from torch.optim.lr_scheduler import _LRScheduler
 
 # Optimization Algorithms
 from torch.optim import Optimizer
+import warnings, math
 
 
 def build_gradient_clipper(config: dict) -> Optional[Callable]:
@@ -187,6 +188,8 @@ def build_scheduler(
             ),
             "epoch",
         )
+    elif scheduler_name == 'warmup_cosineannealing':
+        return None
     elif scheduler_name == "cosineannealingwarmrestarts":
         return (
             lr_scheduler.CosineAnnealingWarmRestarts(
@@ -348,6 +351,45 @@ class WarmupExponentialDecayScheduler:
     # pylint: disable=no-self-use
     def state_dict(self):
         return None
+
+# class WarmupCosineannealing(LRScheduler):
+#     #based on https://pytorch.org/docs/stable/_modules/torch/optim/lr_scheduler.html#CosineAnnealingLR
+#     def __init__(self, optimizer, T_max, warmup=0, eta_min=0, last_epoch=-1, verbose=False):
+#         self.T_max = T_max
+#         self.warmup = warmup #epoch
+#         self.eta_min = eta_min
+#         super(WarmupCosineannealing, self).__init__(optimizer, last_epoch, verbose)   
+
+#     def get_lr(self):
+#         # add warmup (to-do)
+#         if not self._get_lr_called_within_step:
+#             warnings.warn("To get the last learning rate computed by the scheduler, "
+#                           "please use `get_last_lr()`.", UserWarning)
+
+#         if self.last_epoch == 0:
+#             if self.warmup==0: #no warmup
+#                 return [group['lr'] for group in self.optimizer.param_groups]
+#             else:
+#                 return [0 for group in self.optimizer.param_groups]
+#         elif self.last_epoch < self.warmup:
+#             #warmup
+
+#         elif (self.last_epoch - 1 - self.T_max) % (2 * self.T_max) == 0:
+#             return [group['lr'] + (base_lr - self.eta_min) *
+#                     (1 - math.cos(math.pi / self.T_max)) / 2
+#                     for base_lr, group in
+#                     zip(self.base_lrs, self.optimizer.param_groups)]
+#         return [(1 + math.cos(math.pi * self.last_epoch / self.T_max)) /
+#                 (1 + math.cos(math.pi * (self.last_epoch - 1) / self.T_max)) *
+#                 (group['lr'] - self.eta_min) + self.eta_min
+#                 for group in self.optimizer.param_groups]
+
+#     def _get_closed_form_lr(self):
+#         #add warmup (to-do)
+#         return [self.eta_min + (base_lr - self.eta_min) *
+#                 (1 + math.cos(math.pi * self.last_epoch / self.T_max)) / 2
+#                 for base_lr in self.base_lrs]
+
 
 class WarmupScheduler(_LRScheduler):
     def __init__(self, optimizer, total_epochs, last_epoch=-1):

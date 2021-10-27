@@ -202,7 +202,7 @@ def validate_on_data(
         total_num_seqs = 0
         split_gls = []
         split_txt = []
-        for batch in tqdm(iter(valid_iter)):
+        for batch in tqdm(iter(valid_iter), disable=os.environ['WORLD_SIZE']!='1'):
             split_gls.append(batch.gls)
             split_txt.append(batch.txt)
 
@@ -767,37 +767,38 @@ def test(
                     dev_translation_results[tbw][ta]["valid_scores_gathered"]["bleu"]
                     > dev_best_bleu_score
                 ):
+                    logger.info('New Best! beam_width={} alpha={}'.format(tbw, ta))
                     dev_best_bleu_score = dev_translation_results[tbw][ta][
                         "valid_scores_gathered"
                     ]["bleu"]
                     dev_best_translation_beam_size = tbw
                     dev_best_translation_alpha = ta
                     dev_best_translation_result = dev_translation_results[tbw][ta]
-                    logger.info(
-                        "[DEV] partition [Translation] results:\n\t"
-                        "New Best Translation Beam Size: %d and Alpha: %.2f\n\t"
-                        "BLEU-4 %.2f\t(BLEU-1: %.2f,\tBLEU-2: %.2f,\tBLEU-3: %.2f,\tBLEU-4: %.2f)\n\t"
-                        "CHRF %.2f\t"
-                        "ROUGE %.2f",
-                        dev_best_translation_beam_size,
-                        dev_best_translation_alpha,
-                        dev_best_translation_result["valid_scores_gathered"]["bleu"],
-                        dev_best_translation_result["valid_scores_gathered"]["bleu_scores"][
-                            "bleu1"
-                        ],
-                        dev_best_translation_result["valid_scores_gathered"]["bleu_scores"][
-                            "bleu2"
-                        ],
-                        dev_best_translation_result["valid_scores_gathered"]["bleu_scores"][
-                            "bleu3"
-                        ],
-                        dev_best_translation_result["valid_scores_gathered"]["bleu_scores"][
-                            "bleu4"
-                        ],
-                        dev_best_translation_result["valid_scores_gathered"]["chrf"],
-                        dev_best_translation_result["valid_scores_gathered"]["rouge"],
-                    )
-                    logger.info("-" * 60)
+                logger.info(
+                    "[DEV] partition [Translation] results:\n\t"
+                    "Translation Beam Size: %d and Alpha: %.2f\n\t"
+                    "BLEU-4 %.2f\t(BLEU-1: %.2f,\tBLEU-2: %.2f,\tBLEU-3: %.2f,\tBLEU-4: %.2f)\n\t"
+                    "CHRF %.2f\t"
+                    "ROUGE %.2f",
+                    tbw,
+                    ta,
+                    dev_translation_results[tbw][ta]["valid_scores_gathered"]["bleu"],
+                    dev_translation_results[tbw][ta]["valid_scores_gathered"]["bleu_scores"][
+                        "bleu1"
+                    ],
+                    dev_translation_results[tbw][ta]["valid_scores_gathered"]["bleu_scores"][
+                        "bleu2"
+                    ],
+                    dev_translation_results[tbw][ta]["valid_scores_gathered"]["bleu_scores"][
+                        "bleu3"
+                    ],
+                    dev_translation_results[tbw][ta]["valid_scores_gathered"]["bleu_scores"][
+                        "bleu4"
+                    ],
+                    dev_translation_results[tbw][ta]["valid_scores_gathered"]["chrf"],
+                    dev_translation_results[tbw][ta]["valid_scores_gathered"]["rouge"],
+                )
+                logger.info("-" * 60)
 
     logger.info("*" * 60)
     logger.info(
@@ -938,14 +939,14 @@ def test(
 
         if do_translation:
             if dev_best_translation_beam_size > -1:
-                dev_txt_output_path_set = "{}.BW_{:02d}.A_{:1d}.{}.txt.rank{}".format(
+                dev_txt_output_path_set = "{}.BW_{:02d}.A_{:.1f}.{}.txt.rank{}".format(
                     output_path,
                     dev_best_translation_beam_size,
                     dev_best_translation_alpha,
                     "dev",
                     os.environ['LOCAL_RANK']
                 )
-                test_txt_output_path_set = "{}.BW_{:02d}.A_{:1d}.{}.txt.rank{}".format(
+                test_txt_output_path_set = "{}.BW_{:02d}.A_{:.1f}.{}.txt.rank{}".format(
                     output_path,
                     dev_best_translation_beam_size,
                     dev_best_translation_alpha,

@@ -246,6 +246,7 @@ class huggingface_transformer(nn.Module):
         old2new_file: str=None,
         freeze_embed: bool=False,
         src_lang: str='de_DE',
+        gloss_tokenizer: str='default',
         from_scratch: bool=False,
         loss_level: str='token',
         label_smoothing: float=0,
@@ -254,8 +255,11 @@ class huggingface_transformer(nn.Module):
         self.plm_type = plm_type #mBart
         self.plm = plm
         tokenizer.src_lang = src_lang 
-        tokenizer.lang_code_to_id['de_DGS'] = 30
         self.tokenizer = tokenizer
+        assert gloss_tokenizer in ['default', 'custom']
+        self.gloss_tokenizer = gloss_tokenizer 
+        if gloss_tokenizer == 'custom':
+            print('Use customized gloss tokenizer')
         self.loss_level = loss_level
         self.label_smoothing = label_smoothing
         self.ignore_index = self.tokenizer.pad_token_id
@@ -266,6 +270,7 @@ class huggingface_transformer(nn.Module):
 
         self.gls_vocab = gls_vocab
         self.gls_pad_index = gls_vocab.stoi[PAD_TOKEN] 
+        self.gls_lang_index = tokenizer.lang_code_to_id[src_lang]
         self.txt_vocab = txt_vocab #itos
         self.txt_pad_index = txt_vocab.stoi[PAD_TOKEN]
         self.txt_bos_index = tokenizer.convert_tokens_to_ids(self.tokenizer.tgt_lang)
@@ -279,7 +284,8 @@ class huggingface_transformer(nn.Module):
             self.new2old = defaultdict(lambda: 3) #
             for o,n in self.old2new.items():
                 assert n>=0 and n<self.plm.config.vocab_size, (n, self.plm.config.vocab_size)
-                self.new2old[n] = o
+                if type(o) != str:
+                    self.new2old[n] = o
 
         else:
             print(old2new_file,' is not a file. Use original ids')
@@ -306,13 +312,31 @@ class huggingface_transformer(nn.Module):
                 for j in range(gls_lengths[i])
                 if self.gls_vocab.itos[gls[i,j]]!=EOS_TOKEN]
             batch_raw_gls.append(' '.join(raw_gls))
-        inputs = self.tokenizer( #already contain </s> lang_code at the end
-            batch_raw_gls,  
-            padding='longest', #we've already control the maximum length of input seq in dataloader
-            return_attention_mask=True,
-            return_length=True,
-            return_tensors="pt") #input_ids, length, attention_mask
-        inputs['input_ids'] = self.map_old2new(inputs['input_ids'])
+        if self.gloss_tokenizer=='default':
+            inputs = self.tokenizer( #already contain </s> lang_code at the end
+                batch_raw_gls,  
+                padding='longest', #we've already control the maximum length of input seq in dataloader
+                return_attention_mask=True,
+                return_length=True,
+                return_tensors="pt") #input_ids, length, attention_mask
+            inputs['input_ids'] = self.map_old2new(inputs['input_ids'])
+        else:
+            inputs = {'input_ids':[], 'length':[], 'attention_mask':None}
+            eos_ids = [self.tokenizer.eos_token_id, self.gls_lang_index]
+            for raw_gls in batch_raw_gls:
+                input_id = [self.old2new[g] for g in raw_gls.split()] + eos_ids
+                inputs['input_ids'].append(input_id)
+                inputs['length'].append(len(input_id))
+            max_length = max(inputs['length'])
+            #pad and make attention_mask
+            inputs['attention_mask'] = torch.zeros([batch_size, max_length], dtype=torch.long)
+            for i in range(batch_size):
+                length_ = inputs['length'][i]
+                inputs['attention_mask'][i, :length_] = 1
+                inputs['input_ids'][i] += [self.tokenizer.pad_token_id]*(max_length-length_)
+            inputs['input_ids'] = torch.tensor(inputs['input_ids'], dtype=torch.long)
+            inputs['length'] = torch.tensor(inputs['length'], dtype=torch.long)
+
         return inputs['input_ids'].to(device), inputs['length'].to(device), inputs['attention_mask'].to(device)  #B,L
 
 
