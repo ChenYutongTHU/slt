@@ -248,13 +248,20 @@ class huggingface_transformer(nn.Module):
         src_lang: str='de_DE',
         gloss_tokenizer: str='default',
         from_scratch: bool=False,
-        loss_level: str='token',
+        loss_level: str='sentence',
+        lower_case: bool=False, #convert to lower case for gloss
         label_smoothing: float=0,
         ):
         super().__init__()
         self.plm_type = plm_type #mBart
         self.plm = plm
-        tokenizer.src_lang = src_lang 
+        self.lower_case = lower_case
+        if self.plm_type.lower()=='mbart':
+            tokenizer.src_lang = src_lang 
+        elif self.plm_type.lower()=='gpt2':
+            tokenizer.pad_token = '<pad>'
+            tokenizer.eos_token = '</s>'
+            #we cannot use endoftext as padding token as it will be used as ignoreindex in labels later
         self.tokenizer = tokenizer
         assert gloss_tokenizer in ['default', 'custom']
         self.gloss_tokenizer = gloss_tokenizer 
@@ -264,17 +271,28 @@ class huggingface_transformer(nn.Module):
         self.label_smoothing = label_smoothing
         self.ignore_index = self.tokenizer.pad_token_id
         self.translation_loss_fun = XentLoss(
-            pad_index=self.tokenizer.pad_token_id,  # ignore
+            pad_index=self.ignore_index,  # ignore
             smoothing=self.label_smoothing)
         #input (log_probs, targets)
 
         self.gls_vocab = gls_vocab
-        self.gls_pad_index = gls_vocab.stoi[PAD_TOKEN] 
-        self.gls_lang_index = tokenizer.lang_code_to_id[src_lang]
         self.txt_vocab = txt_vocab #itos
-        self.txt_pad_index = txt_vocab.stoi[PAD_TOKEN]
-        self.txt_bos_index = tokenizer.convert_tokens_to_ids(self.tokenizer.tgt_lang)
-        print('bos_index', self.tokenizer.tgt_lang,self.txt_bos_index )
+        if self.plm_type.lower()=='mbart':        
+            self.gls_pad_index = gls_vocab.stoi[PAD_TOKEN] 
+            self.gls_lang_index = tokenizer.lang_code_to_id[src_lang]
+            self.txt_pad_index = txt_vocab.stoi[PAD_TOKEN]
+            self.txt_bos_index = tokenizer.convert_tokens_to_ids(self.tokenizer.tgt_lang)
+        elif self.plm_type.lower()=='gpt2':
+            self.gls_token_type_id = 1
+            self.txt_token_type_id = 0
+            self.gls_pad_index = gls_vocab.stoi[PAD_TOKEN] 
+            self.txt_pad_index = txt_vocab.stoi[PAD_TOKEN]
+            self.txt_pad_index_gpt = tokenizer.pad_token_id
+            self.txt_bos_index = txt_vocab.stoi[BOS_TOKEN]#! a special token
+            self.txt_bos_index_gpt = tokenizer.convert_tokens_to_ids('<s>') #0
+            self.txt_eos_index = txt_vocab.stoi[EOS_TOKEN]
+            self.txt_eos_index_gpt = tokenizer.eos_token_id
+
 
         if os.path.isfile(old2new_file):
             print('Map old id to new id use ',old2new_file)
@@ -290,6 +308,7 @@ class huggingface_transformer(nn.Module):
         else:
             print(old2new_file,' is not a file. Use original ids')
             self.old2new = None
+            self.new2old = None
         
         if from_scratch:
             print('Train from scratch, re-initialize_model')
@@ -297,8 +316,11 @@ class huggingface_transformer(nn.Module):
 
         if freeze_embed:
             print('freeze plm embedding ...')
-            freeze_params(self.plm.model.shared)
-            #freeze_params(self.plm.lm_head) #already tied up
+            if self.plm_type.lower()=='mbart': 
+                freeze_params(self.plm.model.shared)
+                #freeze_params(self.plm.lm_head) #already tied up
+            elif self.plm_type.lower()=='gpt2':
+                freeze_params(self.plm.transformer.wte)
         
 
     def prepare_gls_input(self, gls, gls_lengths):
@@ -311,7 +333,10 @@ class huggingface_transformer(nn.Module):
             raw_gls = [self.gls_vocab.itos[gls[i,j]] 
                 for j in range(gls_lengths[i])
                 if self.gls_vocab.itos[gls[i,j]]!=EOS_TOKEN]
-            batch_raw_gls.append(' '.join(raw_gls))
+            if self.lower_case:
+                batch_raw_gls.append(' '.join(raw_gls.lower()))
+            else:
+                batch_raw_gls.append(' '.join(raw_gls))
         if self.gloss_tokenizer=='default':
             inputs = self.tokenizer( #already contain </s> lang_code at the end
                 batch_raw_gls,  
@@ -373,46 +398,127 @@ class huggingface_transformer(nn.Module):
     def map_old2new(self, batch_input_ids):
         if self.old2new==None:
             return batch_input_ids
-        new_batch_input_ids = batch_input_ids.clone()
+        new_batch_input_ids = batch_input_ids#.clone()
         for bi,input_ids in enumerate(batch_input_ids):
             for ii, id_ in enumerate(input_ids):
-                new_batch_input_ids[bi,ii] = self.old2new[id_.item()]
+                if type(id_)==int:
+                    new_batch_input_ids[bi][ii] = self.old2new[id_]
+                else:
+                    new_batch_input_ids[bi][ii] = self.old2new[id_.item()]
         return new_batch_input_ids
 
     def map_new2old(self, batch_input_ids):
         if self.old2new==None:
             return batch_input_ids
-        new_batch_input_ids = batch_input_ids.clone()
+        new_batch_input_ids = batch_input_ids#.clone()
         for bi,input_ids in enumerate(batch_input_ids):
             for ii, id_ in enumerate(input_ids):
                 if id_.item()==30:
                     #is a special token but won't be ignored by batch_decode, so here we convert it to a special token
-                    new_batch_input_ids[bi,ii] = 2 # </s>
+                    new_batch_input_ids[bi][ii] = 2 # </s>
                 else:
-                    new_batch_input_ids[bi,ii] = self.new2old[id_.item()]
+                    new_batch_input_ids[bi][ii] = self.new2old[id_.item()]
         return new_batch_input_ids
 
     def prepare_inputs(self, sgn, sgn_lengths, txt_input=None, txt_mask=None):
-        sgn, sgn_lengths, sgn_mask_transformer = self.prepare_gls_input(sgn, sgn_lengths)
-        sgn_mask = sgn_mask_transformer.bool().unsqueeze(1) #B,1,L   
-        encoder_inputs = {
-            'input_ids':sgn,
-            'attention_mask': sgn_mask_transformer,            
-        }
-        if txt_input!=None and txt_mask!=None:
-            #txt_mask (B,1,L) is not causal yet, so we can get txt_lengths from it
-            txt_lengths = torch.sum(txt_mask, dim=-1).squeeze(1) #B (including)
-            txt_label, txt_input, txt_mask_transformer = self.prepare_txt_input(txt_input, txt_lengths)
-            decoder_inputs = {
-                'decoder_input_ids': txt_input,
-                'decoder_attention_mask': txt_mask_transformer,
-                'labels': txt_label            
+        if self.plm_type.lower()=='mbart':
+            sgn, sgn_lengths, sgn_mask_transformer = self.prepare_gls_input(sgn, sgn_lengths)
+            sgn_mask = sgn_mask_transformer.bool().unsqueeze(1) #B,1,L   
+            encoder_inputs = {
+                'input_ids':sgn,
+                'attention_mask': sgn_mask_transformer,            
             }
+            if txt_input!=None and txt_mask!=None:
+                #txt_mask (B,1,L) is not causal yet, so we can get txt_lengths from it
+                txt_lengths = torch.sum(txt_mask, dim=-1).squeeze(1) #B (including)
+                txt_label, txt_input, txt_mask_transformer = self.prepare_txt_input(txt_input, txt_lengths)
+                decoder_inputs = {
+                    'decoder_input_ids': txt_input,
+                    'decoder_attention_mask': txt_mask_transformer,
+                    'labels': txt_label            
+                }
+            else:
+                decoder_inputs = {}
+            inputs = {**encoder_inputs, **decoder_inputs}
+        elif self.plm_type.lower()=='gpt2':
+            # step1 reverse gls
+            gls, gls_lengths = sgn, sgn_lengths
+            if txt_input!=None and txt_mask!=None:
+                is_train = True
+                txt, txt_lengths = txt_input, torch.sum(txt_mask, dim=-1).squeeze(1)
+            else:
+                is_train = False
+            batch_size, padded_length = gls.shape
+            device = gls.device
+            inputs = {'input_ids':[],'token_type_ids':[]}
+            if is_train:
+                inputs['labels'] = []
+            input_lengths = []
+            # we don't need attention mask here now, causal mask is automatically used
+            for i in range(batch_size):
+                raw_gls = [self.gls_vocab.itos[gls[i,j]] 
+                    for j in range(gls_lengths[i])
+                    if self.gls_vocab.itos[gls[i,j]]!=EOS_TOKEN]
+                raw_gls = ' '.join(raw_gls)
+                if self.lower_case:
+                    raw_gls = raw_gls.lower()
+                if self.gloss_tokenizer=='default':
+                    gls_ids = self.tokenizer(raw_gls)['input_ids']
+                elif self.gloss_tokenizer=='custom':
+                    gls_ids = []
+                    for g in raw_gls.split():
+                        if self.old2new[g]==3:
+                            print(raw_gls.split(), g)
+                        gls_ids.append(self.old2new[g])
+                else:
+                    raise ValueError
+
+                if is_train:
+                    raw_txt = [self.txt_vocab.itos[txt[i,j]] for j in range(1,txt_lengths[i]) \
+                        if self.txt_vocab.itos[txt[i,j]] != EOS_TOKEN] 
+                    raw_txt = ' '.join(raw_txt)
+                    raw_ids = self.tokenizer(raw_txt)['input_ids']
+                else:
+                    raw_ids = []
+                # print(raw_gls)
+                # print(raw_txt)
+                # print(gls_ids)
+                # print(raw_ids)
+                sequence = gls_ids+[self.txt_bos_index_gpt]+raw_ids
+                sequence_token_type = [self.gls_token_type_id]*len(gls_ids) + [self.txt_token_type_id]*(len(raw_ids)+1)
+                label = [self.ignore_index]*len(gls_ids) + raw_ids+[self.txt_eos_index_gpt]
+                inputs['input_ids'].append(sequence)
+                input_lengths.append(len(sequence))
+                inputs['token_type_ids'].append(sequence_token_type)
+                if is_train:
+                    inputs['labels'].append(label)
+            
+            #useless for gpt2 in old2new for each gloss we've already got them to vocab_id
+            #inputs['input_ids'] = self.map_old2new(inputs['input_ids'])
+            #padding
+            max_length = max(input_lengths)
+            if is_train==False:
+                inputs['attention_mask'] = torch.ones([batch_size, max_length],dtype=torch.long, device=device)
+            for i in range(batch_size):
+                pad_length = max_length-input_lengths[i]
+                if is_train: #pad right
+                    inputs['input_ids'][i] += [self.txt_pad_index_gpt]*pad_length
+                    inputs['labels'][i] += [self.ignore_index]*pad_length
+                    inputs['token_type_ids'][i] += [self.txt_token_type_id]*pad_length
+                else: #pad left
+                    inputs['input_ids'][i] = [self.txt_pad_index_gpt]*pad_length + inputs['input_ids'][i]
+                    inputs['token_type_ids'][i] = [self.gls_token_type_id]*pad_length + inputs['token_type_ids'][i]
+                    if 'attention_mask' in inputs and pad_length>0:
+                        inputs['attention_mask'][i, :pad_length:] = 0
+            inputs['input_ids'] = torch.tensor(inputs['input_ids'], dtype=torch.long, device=device)  
+            inputs['token_type_ids'] = torch.tensor(inputs['token_type_ids'], dtype=torch.long, device=device)
+            if is_train:
+                inputs['labels'] = torch.tensor(
+                    inputs['labels'], dtype=torch.long, device=device)
+            # print(inputs)
+            # input()
         else:
-            decoder_inputs = {}
-        inputs = {**encoder_inputs, **decoder_inputs}
-        # print(inputs)
-        # input()
+            raise ValueError
         return inputs
 
     def run_batch(
@@ -424,27 +530,58 @@ class huggingface_transformer(nn.Module):
         translation_max_output_length: int = 100,
         output_gloss_prob: bool = False
     ) :
+        batch_size = batch.gls.shape[0]
         inputs = self.prepare_inputs(
             sgn=batch.gls,
             sgn_lengths=batch.gls_lengths)
         
+
         #mbart_debug
         if  0:#'dev/30August_2011_Tuesday_heute-783' in batch.sequence:
             print('run_batch')
             print(inputs)
 
         assert translation_beam_alpha>0, translation_beam_alpha
-        decoder_start_token_id=self.tokenizer.lang_code_to_id[self.tokenizer.tgt_lang]
-        if self.old2new:
-            decoder_start_token_id = self.old2new[decoder_start_token_id]
-        output_dict = self.plm.generate(
-            **inputs, 
-            max_length=translation_max_output_length,
-            num_beams=translation_beam_size,
-            length_penalty=translation_beam_alpha,
-            return_dict_in_generate=True,
-            output_attentions=True,
-            decoder_start_token_id=decoder_start_token_id)
+        if self.plm_type.lower()=='mbart':
+            decoder_start_token_id=self.tokenizer.lang_code_to_id[self.tokenizer.tgt_lang]
+            if self.old2new:
+                decoder_start_token_id = self.old2new[decoder_start_token_id]
+            output_dict = self.plm.generate(
+                **inputs, 
+                max_length=translation_max_output_length,
+                num_beams=translation_beam_size,
+                length_penalty=translation_beam_alpha,
+                return_dict_in_generate=True,
+                output_attentions=True,
+                decoder_start_token_id=decoder_start_token_id)
+        elif self.plm_type.lower()=='gpt2':
+            # print('run batch')
+            # print('input_ids')
+            # print(inputs['input_ids'])
+            # print('token type ids')
+            # print(inputs['token_type_ids'])
+            # print('attention mask')
+            # print(inputs['attention_mask'])
+            output_dict = self.plm.generate(
+                input_ids=inputs['input_ids'],
+                token_type_ids=inputs['token_type_ids'],
+                attention_mask=inputs['attention_mask'],#,important here!
+                max_length=translation_max_output_length,
+                num_beams=translation_beam_size,
+                length_penalty=translation_beam_alpha,
+                return_dict_in_generate=True,
+                pad_token_id = 1, # silence warning
+                eos_token_id=self.txt_eos_index_gpt,
+                output_attentions=True) 
+
+            # note that we need to remove prefix (token_type_id=0) in output_dict['sequences']
+            for i in range(batch_size):
+                for j,tt in enumerate(inputs['token_type_ids'][i]):
+                    if tt==self.gls_token_type_id:
+                        output_dict['sequences'][i,j] = self.txt_pad_index_gpt# as special token, to be skipped by batch_decode
+            # print('predict')
+            # print(output_dict['sequences']) 
+            # input()      
         # print(output_dict['sequences'])
         #print(output_dict.keys()) # sequences, encoder_attentions, decoder_attentions
         #return decoded_gloss_sequences, stacked_txt_output, stacked_attention_scores, gloss_probabilities_0.cpu().numpy()
@@ -452,12 +589,14 @@ class huggingface_transformer(nn.Module):
         #mbart_debug
         if 0:#'dev/14April_2010_Wednesday_heute-1879' in batch.sequence:
             print('predict')
-            print(output_dict['sequences'])
+            print(output_dict['sequences'][0,:])
             input()
 
         output_dict['sequences'] = self.map_new2old(output_dict['sequences'])
         stacked_txt_output_decoded = self.tokenizer.batch_decode(output_dict['sequences'], 
             skip_special_tokens=True)
+        if 0:
+            print(stacked_txt_output_decoded[0])
         #!! split end common and the last word!
         #print(stacked_txt_output_decoded) #list of string
         for di, d in enumerate(stacked_txt_output_decoded):
@@ -473,6 +612,8 @@ class huggingface_transformer(nn.Module):
         # batch_txt_predictions,
         # batch_attention_scores,
         # batch_gls_prob #B, T, C return 
+
+
     def forward(
         self,
         sgn: Tensor,
@@ -490,18 +631,36 @@ class huggingface_transformer(nn.Module):
         This seems a little complicated yet avoids modification on the code of dataloader part
         '''
         inputs = self.prepare_inputs(sgn, sgn_lengths, txt_input, txt_mask)
-        output_dict = self.plm(
-            **inputs,
-            return_dict=True,
-            output_attentions=output_attention)
+        if self.plm_type.lower()=='mbart':
+            output_dict = self.plm(
+                **inputs,
+                return_dict=True,
+                output_attentions=output_attention)
+        elif self.plm_type.lower()=='gpt2':
+            output_dict = self.plm(
+                input_ids = inputs['input_ids'],
+                token_type_ids= inputs['token_type_ids'],
+                return_dict=True,
+                output_attentions=output_attention)            
         assert self.loss_level=='sentence', self.loss_level
         batch_size = output_dict['logits'].shape[0]
         #B, T, L
         log_prob = torch.nn.functional.log_softmax(output_dict['logits'], dim=-1)
+
+        #debug
+        if 0:
+            print('forward')
+            print('input_ids')
+            print(inputs['input_ids'])
+            print('token_type_ids')
+            print(inputs['token_type_ids'])
+            print(torch.argmax(log_prob, dim=-1)[0,:])
+            input()
         batch_loss_sum = self.translation_loss_fun(
             log_probs=log_prob,
             targets=inputs['labels']
         ) 
+
         output_dict['loss'] = batch_loss_sum/batch_size
         #logits 1, t,v
         '''

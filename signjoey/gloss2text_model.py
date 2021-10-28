@@ -3,6 +3,7 @@ from json import encoder
 from signjoey import decoders
 from signjoey import embeddings
 from transformers import MBartForConditionalGeneration, MBartTokenizer, MBartConfig
+from transformers import GPT2Tokenizer, GPT2LMHeadModel, AutoTokenizer
 import torch, pickle
 import torch.nn as nn
 import os, numpy as np
@@ -62,6 +63,17 @@ def build_gloss2text_model(
             gls_vocab=gls_vocab, txt_vocab=txt_vocab,
             old2new_file=os.path.join(cfg['pretrained_dir'], 'old2new_vocab.pkl'),
             **cfg.get('mbart_config',{})) #old2new_file, freeze_embed, src_lang
+    elif cfg.get('type', 'mBart') == 'gpt2':
+        print(cfg['pretrained_dir'])
+        tokenizer = AutoTokenizer.from_pretrained(cfg['pretrained_dir'])
+        plm_model = GPT2LMHeadModel.from_pretrained(cfg['pretrained_dir'])
+        model = huggingface_transformer(
+            plm_type='gpt2',
+            plm=plm_model,
+            tokenizer=tokenizer,
+            gls_vocab=gls_vocab, txt_vocab=txt_vocab,
+            old2new_file=os.path.join(cfg['pretrained_dir'], 'old2new_vocab.pkl'),
+            **cfg.get('gpt2_config',{})) 
     elif cfg.get('type', 'mBART') in ['Transformer', 'Transformer_spm']:
         if cfg.get('type', 'mBART') == 'Transformer_spm':
             #!! re-organize txt_vocab and gls_vocab according to tokenizer.json

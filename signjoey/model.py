@@ -115,8 +115,8 @@ def get_loss_for_batch(
                 name=batch.sequence
             )
             translation_loss = output_dict['loss'] # default 'mean' token-level (-100 is ignored)
-            encoder_outputs = output_dict['encoder_last_hidden_state'] #B,L,H
-            attention = output_dict['encoder_attentions'] #B,H,L,L
+            encoder_outputs = output_dict.get('encoder_last_hidden_state',None) #B,L,H
+            attention = output_dict.get('encoder_attentions',None) #B,H,L,L
 
     do_recognition = recognition_loss_function!=None
     do_translation = translation_loss_function!=None

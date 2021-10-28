@@ -344,6 +344,8 @@ def load_config(path="configs/default.yaml") -> dict:
     elif cfg['data'].get('input_data','feature') == 'gloss':
         cfg['training']['recognition_loss_weight'] = 0
         cfg['training']['translation_loss_weight'] = 1
+        if cfg['model']['type'] == 'gpt2':
+            os.environ['TOKENIZERS_PARALLELISM'] = 'false'
     else:
         name = cfg['data']['train']
         ind = name.find('block')
