@@ -34,7 +34,7 @@ class NullEncoder(Encoder):
             self.pe = PositionalEncoding(emb_size)
         else:
             self.pe = None
-    def forward(self, embed_src, src_length=None, mask=None):
+    def forward(self, embed_src, src_length=None, mask=None,**kwargs):
         if self.pe:
             x = self.pe(embed_src)
             return x, x

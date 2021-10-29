@@ -1,4 +1,6 @@
 # coding: utf-8
+
+from signjoey.gloss_cls import gloss_cls_head
 from json import encoder
 import os
 from signjoey.model_3d import backbone_3D
@@ -32,7 +34,7 @@ from torch import Tensor
 from typing import Union
 from signjoey.resnet import Resnet50
 from signjoey.models_3d.CoCLR.utils.utils import neq_load_customized
-from initialization import initialize_gloss_embed, initialize_embed
+from initialization import initialize_embed
 def get_loss_for_batch(
     model,
     batch: Batch,
@@ -621,6 +623,7 @@ class Tokenizer_SignModel(nn.Module):
         self.txt_pad_index = self.signmodel.txt_pad_index
         self.txt_bos_index = self.signmodel.txt_bos_index
         self.txt_eos_index = self.signmodel.txt_eos_index
+        self.gls_pad_index = self.signmodel.gls_pad_index
         self.gls_vocab = self.signmodel.gls_vocab
         self.txt_vocab = self.signmodel.txt_vocab
         self.do_recognition = self.signmodel.do_recognition
@@ -847,10 +850,37 @@ def build_model(
         )
 
     if do_recognition:
-        gloss_output_layer = nn.Linear(encoder.output_size, len(gls_vocab))
-        # if 'gloss_embedding' in cfg:
-        #     if cfg["gloss_embedding"].get("freeze_mode", "all_tune")=='all_freeze':
-        #         freeze_params(gloss_output_layer)
+        bias = True
+        freeze_special, freeze_normal = False, False
+        init_normal_file = None
+        if 'gls_embed' in cfg['encoder'].get('embeddings', {}):
+            bias = cfg['encoder']['embeddings']['gls_embed'].get('bias',True)
+            if bias==False:
+                print('Turn off bias')
+            freeze_mode = cfg['encoder']['embeddings']['gls_embed'].get(
+                "freeze_mode", "all_tune")
+
+            print('freeze_mode = ', freeze_mode)
+            if freeze_mode=='all_freeze':
+                raise ValueError #we should freeze special (they are trained from scratch)
+                freeze_special, freeze_normal = True, True
+            elif freeze_mode=='special_tune':
+                freeze_special, freeze_normal = False, True
+            
+            init_normal_file = cfg['encoder']['embeddings']['gls_embed']['init_file']
+
+        gloss_output_layer = gloss_cls_head(
+            in_features=encoder.output_size,
+            special_vocab_size= len(gls_vocab.specials),
+            vocab_size = len(gls_vocab),
+            bias = bias,
+            gls_vocab = gls_vocab,
+            freeze_normal=freeze_normal, freeze_special=freeze_special,
+            init_normal_file=init_normal_file
+        )
+        # gloss_output_layer = nn.Linear(encoder.output_size, 
+        #     len(gls_vocab), bias=bias
+        #     )
     else:
         gloss_output_layer = None
 
@@ -916,10 +946,7 @@ def build_model(
         print('Turn off initialize')
     
     if do_recognition:
-        if "gls_embed" in cfg['encoder']['embeddings']:
-            initialize_gloss_embed(sign_model.gloss_output_layer, #linear layer
-                                cfg['encoder']['embeddings']['gls_embed']['init_file'],
-                                    gls_vocab)
+        sign_model.gloss_output_layer.initialize_weights()
 
     if do_translation:
         if 'txt_embed' in cfg['decoder']['embeddings']:

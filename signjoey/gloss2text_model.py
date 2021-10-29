@@ -19,7 +19,7 @@ from signjoey.vocabulary import (
 )
 from signjoey.model import SignModel
 from signjoey.PLM import huggingface_transformer, transformer_spm
-from signjoey.encoders import TransformerEncoder
+from signjoey.encoders import TransformerEncoder, NullEncoder
 from signjoey.decoders import TransformerDecoder
 from signjoey.embeddings import Embeddings
 from signjoey.initialization import initialize_model, initialize_embed
@@ -102,12 +102,19 @@ def build_gloss2text_model(
         txt_padding_idx = txt_vocab.stoi[PAD_TOKEN]
         gls_padding_idx = gls_vocab.stoi[PAD_TOKEN]
         enc_emb_dropout = cfg["encoder"]["embeddings"].get("dropout", 0.1)
-        encoder = TransformerEncoder(
-            **cfg["encoder"],  # default pe=True, fc_type='linear', kernel_size=1
-            emb_size=cfg["encoder"]["embeddings"].get("embedding_dim", 512), #unused
-            emb_dropout=enc_emb_dropout,
-            output_size=cfg["encoder"]["hidden_size"]
-        )
+        if cfg["encoder"].get("type",'transformer')=='empty':
+            encoder = NullEncoder(
+                emb_size=cfg["encoder"]["embeddings"].get(
+                    "embedding_dim", 512),  # default pe=Fals
+                pe=cfg["encoder"].get("pe", False),
+            )
+        else:
+            encoder = TransformerEncoder(
+                **cfg["encoder"],  # default pe=True, fc_type='linear', kernel_size=1
+                emb_size=cfg["encoder"]["embeddings"].get("embedding_dim", 512), #unused
+                emb_dropout=enc_emb_dropout,
+                output_size=cfg["encoder"]["hidden_size"]
+            )
         gls_embed = Embeddings(
             **cfg["encoder"]["embeddings"],
             num_heads=cfg["encoder"]["num_heads"],
