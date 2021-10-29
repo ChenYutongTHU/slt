@@ -22,6 +22,30 @@ from torch import nn, Tensor
 from torchtext.data import Dataset
 import yaml
 from signjoey.vocabulary import GlossVocabulary, TextVocabulary
+import tensorflow as tf
+from itertools import groupby
+
+def ctc_decode_func(tf_gloss_probabilities, batch, recognition_beam_size, gloss_scores):
+    assert recognition_beam_size > 0
+    ctc_decode, _ = tf.nn.ctc_beam_search_decoder(
+        inputs=tf_gloss_probabilities,
+        sequence_length=batch.sgn_lengths.cpu().detach().numpy(),
+        beam_width=recognition_beam_size,
+        top_paths=1,
+    )
+    ctc_decode = ctc_decode[0]
+    # Create a decoded gloss list for each sample
+    tmp_gloss_sequences = [[] for i in range(gloss_scores.shape[0])]
+    for (value_idx, dense_idx) in enumerate(ctc_decode.indices):
+        tmp_gloss_sequences[dense_idx[0]].append(
+            ctc_decode.values[value_idx].numpy() + 1
+        )
+    decoded_gloss_sequences = []
+    for seq_idx in range(0, len(tmp_gloss_sequences)):
+        decoded_gloss_sequences.append(
+            [x[0] for x in groupby(tmp_gloss_sequences[seq_idx])]
+        )
+    return decoded_gloss_sequences
 
 def shift_tokens_right(input_ids: torch.Tensor, pad_token_id: int, ignore_index: int=-100):
     """
@@ -42,30 +66,40 @@ def shift_tokens_right(input_ids: torch.Tensor, pad_token_id: int, ignore_index:
 
     return prev_output_tokens,input_ids
 
-def sparse_sample(batch_enc_op, batch_gls_prob, batch_mask, select_strategy='all'):
+def sparse_sample(batch_enc_op, batch_gls_prob, batch_mask, select_strategy='all', return_pred_gls=False):
     #enc_op B,T,D
     #gls_prob B,T,C
     #batch_mask B,1,T
     #select_strategy format ['all','random_num_top1', 'top1/2_mean/max/random/all']
     if select_strategy == 'all':
-        return batch_enc_op, batch_mask
+        if return_pred_gls:
+            return batch_enc_op, batch_mask, None
+        else:
+            return batch_enc_op, batch_mask
 
     batch_size = batch_enc_op.shape[0]
     #assert batch_size == 1, 'currently only support batch_size=1!'
     batch_selected_op = []
     batch_selected_op_len = []
+    batch_selected_pred_gls = []
     for b in range(batch_size):
         length = torch.sum(batch_mask[b])
         gls_prob, enc_op = batch_gls_prob[b, :length], batch_enc_op[b, :length]
         selected_op = []
+        selected_op_pred_gls = []
         t, v = gls_prob.shape
         t, d = enc_op.shape
-        sort_idx = torch.argsort(gls_prob, dim=1, descending=True)
+        sort_idx = torch.argsort(gls_prob, dim=1, descending=True)  #T D -> T D
+        gls_pred = torch.argmax(gls_prob, axis=1)
+
+        if 0:
+            print(gls_pred)
         num = torch.sum(torch.argmax(gls_prob, axis=1) != 0)
         if select_strategy == 'random_num_top1':
             selected_op_id = np.sort(np.random.permutation(t)[:num])
             # print(selected_op_id)
             selected_op = [enc_op[i, :] for i in selected_op_id]
+            selected_op_pred_gls = [gls_pred[i] for i in selected_op_id]
         else:
             topk, agg = select_strategy.split('_')
             assert topk in ['top1', 'top2'], topk
@@ -96,31 +130,38 @@ def sparse_sample(batch_enc_op, batch_gls_prob, batch_mask, select_strategy='all
                         j += 1
                 else:
                     raise ValueError
-
                 if agg == 'mean':
                     ops = torch.stack([enc_op[id_, :]
                                       for id_ in span_id], dim=0)
                     ops = torch.mean(ops, dim=0)
                     selected_op.append(ops)
+                    selected_op_pred_gls.append(cur_pred.item())
                 elif agg == 'random':
                     id_ = np.random.choice(span_id)
                     selected_op.append(enc_op[id_, :])
+                    selected_op_pred_gls.append(cur_pred.item())
                 elif agg == 'all':
                     selected_op += [enc_op[id_, :] for id_ in span_id]
+                    selected_op_pred_gls += [cur_pred.item() for id_ in span_id] 
                 elif agg == 'maxprob':
                     sorted_span_id = sorted(
                         span_id, key=lambda x: gls_prob[x, cur_pred])[::-1]
                     id_ = sorted_span_id[0]
                     selected_op.append(enc_op[id_, :])
+                    selected_op_pred_gls.append(cur_pred.item())
                 else:
                     raise ValueError
                 i = j
         if selected_op == []:
             selected_op = enc_op
+            selected_op_pred_gls = gls_pred.detach().cpu().numpy().tolist() #T,
         else:
             selected_op = torch.stack(selected_op, dim=0)
+            #selected_op_pred_gls = torch.tensor(selected_op_pred_gls, dtype=torch.long, device=selected_op.device) #T
         batch_selected_op.append(selected_op)  # T,D
         batch_selected_op_len.append(selected_op.shape[0])
+        batch_selected_pred_gls.append(selected_op_pred_gls) #T,
+
     #padding
     max_len = max(batch_selected_op_len)
     padded_ops = []
@@ -141,7 +182,13 @@ def sparse_sample(batch_enc_op, batch_gls_prob, batch_mask, select_strategy='all
                 dim=0)  # T',D
         padded_ops.append(op)
     batch_selected_op = torch.stack(padded_ops, dim=0)  # B,T,D
-    return batch_selected_op, new_mask
+
+    
+    #I don't think we need to pad pred_gls
+    if return_pred_gls:
+        return batch_selected_op, new_mask, batch_selected_pred_gls #list of list
+    else:
+        return batch_selected_op, new_mask
 
 
 
@@ -356,6 +403,11 @@ def load_config(path="configs/default.yaml") -> dict:
                 use_block,
                 BLOCK2SIZE[use_block]
             ))
+    if 'load_model' in cfg:
+        cfg['model']['gloss_output_layer_version']=1
+        print('Load model from {}, set cfg.model.gloss_output_layer_version -> 1'.format(cfg['load_model']))
+    if cfg['training'].get('distillation_loss_weight',0.0)>0:
+        assert cfg['model'].get('sample_strategy','all')!='all', 'Please use sparse sample strategy when doing distillation'
     return cfg
 
 

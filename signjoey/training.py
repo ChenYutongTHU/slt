@@ -115,6 +115,13 @@ class TrainManager:
         self.do_translation = (
             config["training"].get("translation_loss_weight", 1.0) > 0.0
         )
+        self.do_distillation = (
+            config["training"].get("distillation_loss_weight", 0.0) > 0.0
+        )
+        self.distillation_loss_weight = config["training"].get(
+            "distillation_loss_weight", 0.0)
+        if self.do_distillation:
+            assert self.do_recognition
         self.visualize_bn = train_config.get("visualize_bn",True)
         # Get Recognition and Translation specific parameters
         if self.do_recognition:
@@ -552,6 +559,8 @@ class TrainManager:
             if self.do_translation:
                 processed_txt_tokens = self.total_txt_tokens
                 epoch_translation_loss = 0
+            if self.do_distillation:
+                epoch_distillation_loss = 0
 
             for batch in iter(train_iter):
                 # reactivate training
@@ -579,7 +588,7 @@ class TrainManager:
                 # memory-6794e10db672
                 update = count == 0
 
-                recognition_loss, translation_loss = self._train_batch(
+                recognition_loss, translation_loss, distillation_loss = self._train_batch(
                     batch, update=update
                 )
 
@@ -597,6 +606,12 @@ class TrainManager:
                         )
                     epoch_translation_loss += translation_loss.detach().cpu().numpy()
 
+                if self.do_distillation:
+                    if is_main_process():
+                        self.tb_writer.add_scalar(
+                            "train/train_distillation_loss", distillation_loss, self.steps
+                        )
+                    epoch_distillation_loss += distillation_loss.detach().cpu().numpy()
                 if self.visualize_bn and self.steps%(self.logging_freq*100)==0:
                     if is_main_process():
                         visualize_bn(model=self.model.module,
@@ -646,6 +661,10 @@ class TrainManager:
                         )
                         log_out += "Gls Tokens per Sec: {:8.0f} || ".format(
                             elapsed_gls_tokens / elapsed
+                        )
+                    if self.do_distillation:
+                        log_out += "Batch Distillation Loss {:10.6f} => ".format(
+                            distillation_loss
                         )
                     if self.do_translation:
                         elapsed_txt_tokens = (
@@ -719,6 +738,10 @@ class TrainManager:
                         translation_beam_alpha=self.eval_translation_beam_alpha
                         if self.do_translation
                         else None,
+                        do_distillation=self.do_distillation,
+                        distillation_loss_weight=self.distillation_loss_weight
+                        if self.do_distillation
+                        else None,
                         frame_subsampling_ratio=self.frame_subsampling_ratio,
                         use_amp=self.use_amp
                     )
@@ -768,7 +791,12 @@ class TrainManager:
                                 val_res["valid_scores_gathered"]["bleu_scores"],
                                 self.steps,
                             )
-
+                        if self.do_distillation:
+                            self.tb_writer.add_scalar(
+                                "valid/valid_distillation_loss_rank0",
+                                val_res["valid_distillation_loss"],
+                                self.steps,
+                            )
                     if self.early_stopping_metric == "recognition_loss":
                         assert self.do_recognition
                         ckpt_score = val_res["valid_recognition_loss"]
@@ -1039,9 +1067,9 @@ class TrainManager:
         :return normalized_recognition_loss: Normalized recognition loss
         :return normalized_translation_loss: Normalized translation loss
         """
-
+        model_name = self.model.module.__class__.__name__
         with torch.cuda.amp.autocast(enabled=self.use_amp):
-            recognition_loss, translation_loss, _, _ = get_loss_for_batch(
+            recognition_loss, translation_loss, distillation_loss, _, _ = get_loss_for_batch(
                 model=self.model,
                 batch=batch,
                 recognition_loss_function=self.recognition_loss_function
@@ -1056,14 +1084,19 @@ class TrainManager:
                 translation_loss_weight=self.translation_loss_weight
                 if self.do_translation
                 else None,
+                distillation_loss_weight=self.distillation_loss_weight
+                if self.do_distillation
+                else None,
                 input_data = self.input_data
             )
 
             # normalize translation loss
             if self.do_translation:
-                if self.cfg['data'].get('input_data','feature')=='gloss' and \
-                    self.cfg['model'].get('type','transformer').lower() in ['mbart','gpt2']:
+                # if self.cfg['data'].get('input_data','feature')=='gloss' and \
+                #     self.cfg['model'].get('type','transformer').lower() in ['mbart','gpt2']:
+                if model_name in ['SignModel_PLM', 'huggingface_transformer']:
                     normalized_translation_loss = translation_loss #No need to normalize (token level)
+                    print(model_name)
                 else:
                     if self.translation_normalization_mode == "batch":
                         txt_normalization_factor = batch.num_seqs
@@ -1078,6 +1111,11 @@ class TrainManager:
                     )
             else:
                 normalized_translation_loss = 0
+            
+            if self.do_distillation:
+                normalized_distillation_loss = distillation_loss #already normalized within get_loss
+            else:
+                normalized_distillation_loss = 0
 
             # TODO (Cihan): Add Gloss Token normalization (?)
             #   I think they are already being normalized by batch
@@ -1098,7 +1136,7 @@ class TrainManager:
             else:
                 normalized_recognition_loss = 0
 
-            total_loss = normalized_recognition_loss + normalized_translation_loss
+            total_loss = normalized_recognition_loss + normalized_translation_loss + normalized_distillation_loss
         
         # compute gradients
         self.scaler.scale(total_loss).backward()
@@ -1122,7 +1160,7 @@ class TrainManager:
         if self.do_translation:
             self.total_txt_tokens += batch.num_txt_tokens
 
-        return normalized_recognition_loss, normalized_translation_loss
+        return normalized_recognition_loss, normalized_translation_loss, normalized_distillation_loss
 
     def _add_report(
         self,
@@ -1327,7 +1365,7 @@ def train(cfg_file: str, preemptible: bool=False) -> None:
     # build model and load parameters into it
     do_recognition = cfg["training"].get("recognition_loss_weight", 1.0) > 0.0
     do_translation = cfg["training"].get("translation_loss_weight", 1.0) > 0.0
-    
+    do_distillation = cfg["training"].get("distillation_loss_weight", 1.0) > 0.0
     if input_data == 'feature':
         model = build_model(
             cfg=cfg["model"],
@@ -1338,6 +1376,7 @@ def train(cfg_file: str, preemptible: bool=False) -> None:
             else cfg["data"]["feature_size"],
             do_recognition=do_recognition,
             do_translation=do_translation,
+            do_distillation=do_distillation
         )
     elif input_data == 'image':
         model = build_model(
@@ -1369,7 +1408,6 @@ def train(cfg_file: str, preemptible: bool=False) -> None:
     total_params = sum(p.numel() for p in model.parameters())
     trainer.logger.info('# Total parameters = {}'.format(total_params))
     trainer.logger.info('# Total trainable parameters = {}'.format(total_params_trainable))
-
     if input_data=='image':
         for sub in ['tokenizer', 'signmodel']:
             total_params_trainable = sum(p.numel()
@@ -1377,7 +1415,7 @@ def train(cfg_file: str, preemptible: bool=False) -> None:
             total_params = sum(p.numel() for p in getattr(model, sub).parameters())
             trainer.logger.info('# {} parameters = {}'.format(sub, total_params))
             trainer.logger.info('# {} trainable parameters = {}'.format(sub, total_params_trainable))         
-    
+
     # DDP
     if distributed:
         trainer.logger.info('Distributed training, world_size={}, local_rank={}, \

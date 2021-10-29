@@ -69,10 +69,10 @@ def validate_on_data(
     sgn_dim: int,
     do_recognition: bool,
     recognition_loss_function: torch.nn.Module,
-    recognition_loss_weight: int,
+    recognition_loss_weight: float,
     do_translation: bool,
     translation_loss_function: torch.nn.Module,
-    translation_loss_weight: int,
+    translation_loss_weight: float,
     translation_max_output_length: int,
     level: str,
     txt_pad_index: int,
@@ -85,7 +85,9 @@ def validate_on_data(
     frame_subsampling_ratio: int = None,
     use_amp: bool=False,
     output_attention: bool=False,
-    output_feature: bool=False
+    output_feature: bool=False,
+    do_distillation: bool=False,
+    distillation_loss_weight: float=0,
 ) -> (
     float,
     float,
@@ -197,6 +199,7 @@ def validate_on_data(
             all_encoder_outputs = []
         total_recognition_loss = 0
         total_translation_loss = 0
+        total_distillation_loss = 0
         total_num_txt_tokens = 0
         total_num_gls_tokens = 0
         total_num_seqs = 0
@@ -209,7 +212,7 @@ def validate_on_data(
             batch._make_cuda()
             sort_reverse_index = batch.sort_by_sgn_lengths() 
             with torch.cuda.amp.autocast(enabled=use_amp):
-                batch_recognition_loss, batch_translation_loss, attention, encoder_outputs = get_loss_for_batch(
+                batch_recognition_loss, batch_translation_loss, batch_distillation_loss, attention, encoder_outputs = get_loss_for_batch(
                     model=model,
                     batch=batch,
                     recognition_loss_function=recognition_loss_function
@@ -223,6 +226,9 @@ def validate_on_data(
                     else None,
                     translation_loss_weight=translation_loss_weight
                     if do_translation
+                    else None,
+                    distillation_loss_weight=distillation_loss_weight
+                    if do_distillation
                     else None,
                     input_data=cfg['data'].get('input_data','feature'),
                     output_attention=output_attention
@@ -261,7 +267,9 @@ def validate_on_data(
             if do_translation:
                 total_translation_loss += batch_translation_loss.item()
                 total_num_txt_tokens += batch.num_txt_tokens
-
+            if do_distillation:
+                assert batch_distillation_loss!=None
+                total_distillation_loss += batch_distillation_loss.item()
 
             total_num_seqs += batch.num_seqs
             # sort outputs back to original order
@@ -353,7 +361,7 @@ def validate_on_data(
             and total_num_txt_tokens > 0
         ):
             # total validation translation loss
-            valid_translation_loss = total_translation_loss
+            valid_translation_loss = total_translation_loss/len(valid_iter)
             # exponent of token-level negative log prob
             valid_ppl = np.exp(total_translation_loss / total_num_txt_tokens)
         else:
@@ -401,6 +409,8 @@ def validate_on_data(
         results["sequence"] = [seq for ti, seq in enumerate(data.sequence) if ti in split_indices]
         results['all_attention_scores'] = all_attention_scores
 
+    if do_distillation:
+        results['valid_distillation_loss'] = total_distillation_loss/len(valid_iter)
     if output_attention:
         assert int(os.environ['WORLD_SIZE'])==1, os.environ['WORLD_SIZE']
         results['all_self_attention_scores'] = all_self_attention_scores
@@ -546,8 +556,17 @@ def test(
     model_checkpoint = load_checkpoint(ckpt)#, map_location='cuda:0') #-default to gpu
 
     # build model and load parameters into it
-    do_recognition = cfg["training"].get("recognition_loss_weight", 1.0) > 0.0
-    do_translation = cfg["training"].get("translation_loss_weight", 1.0) > 0.0
+    recognition_loss_weight = cfg["training"].get(
+        "recognition_loss_weight", 1.0)
+    do_recognition = recognition_loss_weight > 0.0
+    translation_loss_weight = cfg["training"].get(
+        "translation_loss_weight", 1.0)
+    do_translation = translation_loss_weight > 0.0
+    distillation_loss_weight = cfg["training"].get(
+        "distillation_loss_weight", 1.0)
+    do_distillation = distillation_loss_weight > 0.0
+    if do_distillation:
+        assert do_recognition
     input_data = cfg["data"].get("input_data", "feature")
     if input_data == 'feature':
         model = build_model(
@@ -559,6 +578,7 @@ def test(
             else cfg["data"]["feature_size"],
             do_recognition=do_recognition,
             do_translation=do_translation,
+            do_distillation=do_distillation
         )
     elif input_data == 'image':
         if cfg["model"]["tokenizer"]["architecture"] == 'cnn':
@@ -659,7 +679,7 @@ def test(
             # Recognition Parameters
             do_recognition=do_recognition,
             recognition_loss_function=recognition_loss_function if do_recognition else None,
-            recognition_loss_weight=1,
+            recognition_loss_weight=recognition_loss_weight,
             recognition_beam_size=recognition_beam_sizes,
             # Translation Parameters
             do_translation=False,
@@ -672,7 +692,10 @@ def test(
             frame_subsampling_ratio=frame_subsampling_ratio,
             use_amp = cfg["training"].get('use_amp',False),
             output_attention=cfg["testing"].get("output_attention",False),
-            output_feature=cfg["testing"].get("output_feature", False)
+            output_feature=cfg["testing"].get("output_feature", False),
+            do_distillation=do_distillation,
+            distillation_loss_weight=distillation_loss_weight
+
         ) #return {'}
         model.module.do_translation = do_translation
         logger.info("finished in %.4fs ", time.time() - valid_start_time)
@@ -735,11 +758,11 @@ def test(
                     recognition_loss_function=recognition_loss_function
                     if do_recognition
                     else None,
-                    recognition_loss_weight=1 if do_recognition else None,
+                    recognition_loss_weight=recognition_loss_weight if do_recognition else None,
                     recognition_beam_size=1 if do_recognition else None,
                     do_translation=do_translation,
                     translation_loss_function=translation_loss_function,
-                    translation_loss_weight=1,
+                    translation_loss_weight=translation_loss_weight,
                     translation_max_output_length=translation_max_output_length,
                     txt_pad_index=txt_vocab.stoi[PAD_TOKEN],
                     gls_pad_index=gls_vocab.stoi[PAD_TOKEN],
@@ -748,7 +771,9 @@ def test(
                     frame_subsampling_ratio=frame_subsampling_ratio,
                     output_feature=cfg["testing"].get("output_feature",False),
                     output_attention=cfg["testing"].get(
-                        "output_attention", False)
+                        "output_attention", False),
+                    do_distillation=do_distillation,
+                    distillation_loss_weight=distillation_loss_weight
                 )
                 if save_immediate_results:
                     save_immediate_results_fun(
@@ -872,6 +897,8 @@ def test(
         else None,
         translation_beam_alpha=dev_best_translation_alpha if do_translation else None,
         frame_subsampling_ratio=frame_subsampling_ratio,
+        do_distillation=do_distillation,
+        distillation_loss_weight=distillation_loss_weight
     )
 
     logger.info(

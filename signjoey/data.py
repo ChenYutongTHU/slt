@@ -141,20 +141,7 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
     gls_vocab_file = data_cfg.get("gls_vocab", None)
     txt_vocab_file = data_cfg.get("txt_vocab", None)
 
-    gls_vocab, gls_counter = build_vocab(
-        field="gls",
-        min_freq=gls_min_freq,
-        max_size=gls_max_size,
-        dataset=train_data,
-        vocab_file=gls_vocab_file,
-    )
-    txt_vocab, txt_counter = build_vocab(
-        field="txt",
-        min_freq=txt_min_freq,
-        max_size=txt_max_size,
-        dataset=train_data,
-        vocab_file=txt_vocab_file,
-    )
+
     random_train_subset = data_cfg.get("random_train_subset", -1)
     if random_train_subset > -1:
         # select this many training examples randomly and discard the rest
@@ -187,6 +174,21 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
         fields=(sequence_field, signer_field, sgn_field,
                 gls_field, txt_field, num_frames_field),
         downsample=downsample
+    )
+
+    gls_vocab, gls_counter = build_vocab(
+        field="gls",
+        min_freq=gls_min_freq,
+        max_size=gls_max_size,
+        dataset=[train_data, dev_data, test_data],
+        vocab_file=gls_vocab_file,
+    )
+    txt_vocab, txt_counter = build_vocab(
+        field="txt",
+        min_freq=txt_min_freq,
+        max_size=txt_max_size,
+        dataset=[train_data, dev_data, test_data],
+        vocab_file=txt_vocab_file,
     )
 
     gls_field.vocab = gls_vocab

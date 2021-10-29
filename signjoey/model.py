@@ -19,8 +19,9 @@ from signjoey.initialization import initialize_model
 from signjoey.embeddings import Embeddings, SpatialEmbeddings
 from signjoey.encoders import CNNEncoder, Encoder, RecurrentEncoder, TransformerEncoder, NullEncoder
 from signjoey.decoders import Decoder, RecurrentDecoder, TransformerDecoder
+from signjoey.signmodel_plm import SignModel_PLM
 from signjoey.search import beam_search, greedy
-from signjoey.helpers import sparse_sample
+from signjoey.helpers import ctc_decode_func, sparse_sample
 from signjoey.vocabulary import (
     TextVocabulary,
     GlossVocabulary,
@@ -35,11 +36,14 @@ from typing import Union
 from signjoey.resnet import Resnet50
 from signjoey.models_3d.CoCLR.utils.utils import neq_load_customized
 from initialization import initialize_embed
+
+
 def get_loss_for_batch(
     model,
     batch: Batch,
     recognition_loss_weight: float,
     translation_loss_weight: float,
+    distillation_loss_weight: float,
     recognition_loss_function: nn.Module,
     translation_loss_function: nn.Module,
     input_data: str='feature',
@@ -61,12 +65,12 @@ def get_loss_for_batch(
     # pylint: disable=unused-variable
 
     # Do a forward pass
-    translation_loss = None
+    translation_loss, distillation_loss = None, None
     model_name = model.__class__.__name__
     if model_name == 'DistributedDataParallel':
         model_name = model.module.__class__.__name__
     if input_data=='feature':
-        decoder_outputs, gloss_probabilities, attention, encoder_outputs = model(
+        outputs = model(
             sgn=batch.sgn,
             sgn_mask=batch.sgn_mask,
             sgn_lengths=batch.sgn_lengths,
@@ -74,6 +78,14 @@ def get_loss_for_batch(
             txt_mask=batch.txt_mask,
             output_attention=output_attention
             )
+        if model_name=='SignModel':
+            assert len(outputs) == 4, len(outputs)
+            decoder_outputs, gloss_probabilities, attention, encoder_outputs = outputs
+        elif model_name=='SignModel_PLM':
+            translation_loss, gloss_probabilities, attention, encoder_outputs, distillation_loss = outputs
+        else:
+            raise ValueError
+
     elif input_data=='image':
         (decoder_outputs, gloss_probabilities, attention, encoder_outputs), batch.sgn, batch.sgn_mask, batch.sgn_lengths = model(
             sgn_img=batch.sgn_img,
@@ -122,6 +134,7 @@ def get_loss_for_batch(
 
     do_recognition = recognition_loss_function!=None
     do_translation = translation_loss_function!=None
+    do_distillation = distillation_loss!=None
 
     if do_recognition:
             assert gloss_probabilities is not None
@@ -138,30 +151,29 @@ def get_loss_for_batch(
     else:
         recognition_loss = None
 
-    if do_translation and translation_loss==None:
-        assert decoder_outputs is not None
-        word_outputs, _, _, _ = decoder_outputs
-        # Calculate Translation Loss
-        txt_log_probs = F.log_softmax(word_outputs, dim=-1)
-        # if 'dev/28May_2010_Friday_tagesschau-7496' in batch.sequence:
-        #     # print('get_loss')
-        #     # print(txt_log_probs.shape)
-        #     # print('gls input')
-        #     # print(batch.gls)
-        #     # print(batch.gls_mask)
-        #     print('txt label')
-        #     print(batch.txt)
-        #     print('txt predict')
-        #     print(torch.argmax(txt_log_probs, dim=-1))
-        translation_loss = (
-            translation_loss_function(txt_log_probs, batch.txt)
-            * translation_loss_weight
-        )
-    elif not do_translation:
+    if do_translation:
+        if translation_loss==None:
+            assert decoder_outputs is not None
+            word_outputs, _, _, _ = decoder_outputs
+            # Calculate Translation Loss
+            txt_log_probs = F.log_softmax(word_outputs, dim=-1)
+            translation_loss = (
+                translation_loss_function(txt_log_probs, batch.txt)
+                * translation_loss_weight
+            )
+        else:
+            translation_loss = translation_loss*translation_loss_weight
+    else:
         translation_loss = None
 
+    if do_distillation:
+        assert distillation_loss_weight>0
+        distillation_loss = distillation_loss*distillation_loss_weight
+    else:
+        assert distillation_loss_weight in [0,None], distillation_loss_weight
+        distillation_loss = None
 
-    return recognition_loss, translation_loss, attention, encoder_outputs
+    return recognition_loss, translation_loss, distillation_loss, attention, encoder_outputs
 
 
 class CNN(torch.nn.Module):
@@ -391,66 +403,7 @@ class SignModel(nn.Module):
             unroll_steps=unroll_steps,
             hidden=decoder_hidden,
         )
-
-    def get_loss_for_batch(
-        self,
-        batch: Batch,
-        recognition_loss_function: nn.Module,
-        translation_loss_function: nn.Module,
-        recognition_loss_weight: float,
-        translation_loss_weight: float,
-    ) -> (Tensor, Tensor):
-        """
-        Compute non-normalized loss and number of tokens for a batch
-
-        :param batch: batch to compute loss for
-        :param recognition_loss_function: Sign Language Recognition Loss Function (CTC)
-        :param translation_loss_function: Sign Language Translation Loss Function (XEntropy)
-        :param recognition_loss_weight: Weight for recognition loss
-        :param translation_loss_weight: Weight for translation loss
-        :return: recognition_loss: sum of losses over sequences in the batch
-        :return: translation_loss: sum of losses over non-pad elements in the batch
-        """
-        # pylint: disable=unused-variable
-
-        # Do a forward pass
-        decoder_outputs, gloss_probabilities = self.forward(
-            sgn=batch.sgn,
-            sgn_mask=batch.sgn_mask,
-            sgn_lengths=batch.sgn_lengths,
-            txt_input=batch.txt_input,
-            txt_mask=batch.txt_mask,
-        )
-
-        if self.do_recognition:
-            assert gloss_probabilities is not None
-            # Calculate Recognition Loss
-            recognition_loss = (
-                recognition_loss_function(
-                    gloss_probabilities,
-                    batch.gls,
-                    batch.sgn_lengths.long(),
-                    batch.gls_lengths.long(),
-                )
-                * recognition_loss_weight
-            )
-        else:
-            recognition_loss = None
-
-        if self.do_translation:
-            assert decoder_outputs is not None
-            word_outputs, _, _, _ = decoder_outputs
-            # Calculate Translation Loss
-            txt_log_probs = F.log_softmax(word_outputs, dim=-1)
-            translation_loss = (
-                translation_loss_function(txt_log_probs, batch.txt)
-                * translation_loss_weight
-            )
-        else:
-            translation_loss = None
-
-        return recognition_loss, translation_loss
-
+                
     def run_batch(
         self,
         batch: Batch,
@@ -501,35 +454,12 @@ class SignModel(nn.Module):
                 (gloss_probabilities[:, :, 1:], gloss_probabilities[:, :, 0, None]),
                 axis=-1,
             )
-
-            def ctc_decode(tf_gloss_probabilities, batch, recognition_beam_size, gloss_scores):
-                assert recognition_beam_size > 0
-                ctc_decode, _ = tf.nn.ctc_beam_search_decoder(
-                    inputs=tf_gloss_probabilities,
-                    sequence_length=batch.sgn_lengths.cpu().detach().numpy(),
-                    beam_width=recognition_beam_size,
-                    top_paths=1,
-                )
-                ctc_decode = ctc_decode[0]
-                # Create a decoded gloss list for each sample
-                tmp_gloss_sequences = [[] for i in range(gloss_scores.shape[0])]
-                for (value_idx, dense_idx) in enumerate(ctc_decode.indices):
-                    tmp_gloss_sequences[dense_idx[0]].append(
-                        ctc_decode.values[value_idx].numpy() + 1
-                    )
-                decoded_gloss_sequences = []
-                for seq_idx in range(0, len(tmp_gloss_sequences)):
-                    decoded_gloss_sequences.append(
-                        [x[0] for x in groupby(tmp_gloss_sequences[seq_idx])]
-                    )
-                return decoded_gloss_sequences
-
             if type(recognition_beam_size)!=list:
-                decoded_gloss_sequences = ctc_decode(tf_gloss_probabilities, batch, recognition_beam_size, gloss_scores)
+                decoded_gloss_sequences = ctc_decode_func(tf_gloss_probabilities, batch, recognition_beam_size, gloss_scores)
             else:
                 decoded_gloss_sequences = {}
                 for rbs in recognition_beam_size:
-                    decoded_gloss_sequences[rbs] = ctc_decode(tf_gloss_probabilities, batch, rbs, gloss_scores)
+                    decoded_gloss_sequences[rbs] = ctc_decode_func(tf_gloss_probabilities, batch, rbs, gloss_scores)
 
         else:
             decoded_gloss_sequences = None
@@ -745,21 +675,7 @@ class Tokenizer_SignModel(nn.Module):
         )
         return outputs, sgn, sgn_mask, sgn_lengths
 
-    def get_loss_for_batch(
-        self,
-        batch: Batch,
-        **kwargs,
-    ) -> (Tensor, Tensor):
-        assert batch.sgn == None
-        batch.sgn, batch.sgn_mask, batch.sgn_lengths = self.visual_tokenize(
-            sgn_img=batch.sgn_img,
-            sgn_mask=batch.sgn_mask,
-            sgn_lengths=batch.sgn_lengths)
-        outputs = self.signmodel.get_loss_for_batch(
-            batch=batch,
-            **kwargs
-        )
-        return outputs
+
 
     def run_batch(
         self,
@@ -785,6 +701,7 @@ def build_model(
     txt_vocab: TextVocabulary,
     do_recognition: bool = True,
     do_translation: bool = True,
+    do_distillation: bool = False,
     input_data: str='feature',
 ) -> SignModel:
     """
@@ -869,103 +786,134 @@ def build_model(
             
             init_normal_file = cfg['encoder']['embeddings']['gls_embed']['init_file']
 
-        gloss_output_layer = gloss_cls_head(
-            in_features=encoder.output_size,
-            special_vocab_size= len(gls_vocab.specials),
-            vocab_size = len(gls_vocab),
-            bias = bias,
-            gls_vocab = gls_vocab,
-            freeze_normal=freeze_normal, freeze_special=freeze_special,
-            init_normal_file=init_normal_file
-        )
-        # gloss_output_layer = nn.Linear(encoder.output_size, 
-        #     len(gls_vocab), bias=bias
-        #     )
+        gloss_output_layer_version = cfg.get('gloss_output_layer_version',1)
+        print('gloss output layer version = ', gloss_output_layer_version)
+        if gloss_output_layer_version==1:
+            gloss_output_layer = nn.Linear(encoder.output_size, 
+                len(gls_vocab), bias=bias
+                )
+        else:
+            gloss_output_layer = gloss_cls_head(
+                in_features=encoder.output_size,
+                special_vocab_size= len(gls_vocab.specials),
+                vocab_size = len(gls_vocab),
+                bias = bias,
+                gls_vocab = gls_vocab,
+                freeze_normal=freeze_normal, freeze_special=freeze_special,
+                init_normal_file=init_normal_file
+            )
+
     else:
         gloss_output_layer = None
 
-    # build decoder and word embeddings
-    if do_translation:
-        txt_embed: Union[Embeddings, None] = Embeddings(
-            **cfg["decoder"]["embeddings"],
-            num_heads=cfg["decoder"]["num_heads"],
-            vocab_size=len(txt_vocab),# 
-            padding_idx=txt_padding_idx,
-            output_dim=cfg["decoder"]["hidden_size"]
-        )
-        dec_dropout = cfg["decoder"].get("dropout", 0.0)
-        dec_emb_dropout = cfg["decoder"]["embeddings"].get("dropout", dec_dropout)
-        if "gloss_encoder" in cfg:
-            if cfg["gloss_encoder"].get("type", "transformer"):
-                gloss_encoder = TransformerEncoder(
-                    **cfg["gloss_encoder"],  # default pe=True, fc_type='linear', kernel_size=1
+    signmodel_type = cfg.get('signmodel_type','vanilla') #standard, signmodel_plm
+    assert signmodel_type in ['signmodel_plm', 'vanilla']
+
+
+    if signmodel_type=='vanilla':
+        # build decoder and word embeddings
+        if do_translation:
+            txt_embed: Union[Embeddings, None] = Embeddings(
+                **cfg["decoder"]["embeddings"],
+                num_heads=cfg["decoder"]["num_heads"],
+                vocab_size=len(txt_vocab),# 
+                padding_idx=txt_padding_idx,
+                output_dim=cfg["decoder"]["hidden_size"]
+            )
+            dec_dropout = cfg["decoder"].get("dropout", 0.0)
+            dec_emb_dropout = cfg["decoder"]["embeddings"].get("dropout", dec_dropout)
+            if "gloss_encoder" in cfg:
+                if cfg["gloss_encoder"].get("type", "transformer"):
+                    gloss_encoder = TransformerEncoder(
+                        **cfg["gloss_encoder"],  # default pe=True, fc_type='linear', kernel_size=1
+                    )
+            else:
+                gloss_encoder = None
+            if cfg["decoder"].get("type", "recurrent") == "transformer":
+                decoder = TransformerDecoder(
+                    **cfg["decoder"],
+                    encoder=encoder,
+                    vocab_size=len(txt_vocab),
+                    emb_size=txt_embed.embedding_dim,
+                    emb_dropout=dec_emb_dropout,
+                    tied_softmax=cfg.get("tied_softmax", False),
+                    output_layer_size=txt_embed.embedding_dim if cfg.get("tied_softmax", False) else -1
+                )
+            else:
+                decoder = RecurrentDecoder(
+                    **cfg["decoder"],
+                    encoder=encoder,
+                    vocab_size=len(txt_vocab),
+                    emb_size=txt_embed.embedding_dim,
+                    emb_dropout=dec_emb_dropout,
                 )
         else:
+            txt_embed = None
+            decoder = None
             gloss_encoder = None
-        if cfg["decoder"].get("type", "recurrent") == "transformer":
-            decoder = TransformerDecoder(
-                **cfg["decoder"],
-                encoder=encoder,
-                vocab_size=len(txt_vocab),
-                emb_size=txt_embed.embedding_dim,
-                emb_dropout=dec_emb_dropout,
-                tied_softmax=cfg.get("tied_softmax", False),
-                output_layer_size=txt_embed.embedding_dim if cfg.get("tied_softmax", False) else -1
-            )
+        sign_model: SignModel = SignModel(
+            encoder=encoder,
+            gloss_output_layer=gloss_output_layer,
+            sample_strategy=cfg.get('sample_strategy','all'),
+            gloss_encoder = gloss_encoder,
+            decoder=decoder,
+            sgn_embed=sgn_embed,
+            txt_embed=txt_embed,
+            gls_vocab=gls_vocab,
+            txt_vocab=txt_vocab,
+            do_recognition=do_recognition,
+            do_translation=do_translation,
+        )
+        # custom initialization of sign_model parameters
+        if cfg.get("initialize_model", True)==True:
+            initialize_model(sign_model, cfg, txt_padding_idx)
         else:
-            decoder = RecurrentDecoder(
-                **cfg["decoder"],
-                encoder=encoder,
-                vocab_size=len(txt_vocab),
-                emb_size=txt_embed.embedding_dim,
-                emb_dropout=dec_emb_dropout,
-            )
+            print('Turn off initialize')    # custom initialization of sign_model parameters
     else:
-        txt_embed = None
-        decoder = None
-        gloss_encoder = None
-
-    sign_model: SignModel = SignModel(
-        encoder=encoder,
-        gloss_output_layer=gloss_output_layer,
-        sample_strategy=cfg.get('sample_strategy','all'),
-        gloss_encoder = gloss_encoder,
-        decoder=decoder,
-        sgn_embed=sgn_embed,
-        txt_embed=txt_embed,
-        gls_vocab=gls_vocab,
-        txt_vocab=txt_vocab,
-        do_recognition=do_recognition,
-        do_translation=do_translation,
-    )
-
-    # custom initialization of sign_model parameters
-    if cfg.get("initialize_model", True)==True:
-        initialize_model(sign_model, cfg, txt_padding_idx)
-    else:
-        print('Turn off initialize')
+        #signmodel_plm
+        assert 'plm' in cfg
+        sign_model: SignModel_PLM = SignModel_PLM(
+            encoder=encoder, #here we refer to sign->gloss
+            gloss_output_layer=gloss_output_layer,
+            sample_strategy=cfg.get('sample_strategy','all'),
+            plm_cfg=cfg['plm'],
+            sgn_embed = sgn_embed,
+            txt_vocab = txt_vocab,
+            gls_vocab = gls_vocab, #gls_vocab is needed to convert CTC prediction back to gls str
+            do_recognition=do_recognition,
+            do_translation=do_translation, 
+            do_distillation=do_distillation       
+        )
+        # custom initialization of sign_model parameters
+        if cfg.get("initialize_model", True)==True:
+            initialize_model(sign_model.encoder, cfg)
+            initialize_model(sign_model.sgn_embed, cfg)
+            initialize_model(sign_model.gloss_output_layer, cfg)
+        else:
+            print('Turn off initialize')    # custom initialization of sign_model parameters
     
-    if do_recognition:
+    if do_recognition and gloss_output_layer_version==2:
         sign_model.gloss_output_layer.initialize_weights()
 
     if do_translation:
-        if 'txt_embed' in cfg['decoder']['embeddings']:
-            initialize_embed(sign_model.txt_embed, vocab=txt_vocab,
-                            cfg=cfg['decoder']['embeddings']['txt_embed'], verbose='txt')
-        # tie softmax layer with txt embeddings
-        if cfg.get("tied_softmax", False):
-            print('Tied softmax')
-            # noinspection PyUnresolvedReferences
-            if txt_embed.lut.weight.shape == sign_model.decoder.output_layer.weight.shape:
-                # (also) share txt embeddings and softmax layer:
+        if signmodel_type == 'vanilla':
+            if 'txt_embed' in cfg['decoder']['embeddings']:
+                initialize_embed(sign_model.txt_embed, vocab=txt_vocab,
+                                cfg=cfg['decoder']['embeddings']['txt_embed'], verbose='txt')
+            # tie softmax layer with txt embeddings
+            if cfg.get("tied_softmax", False):
+                print('Tied softmax')
                 # noinspection PyUnresolvedReferences
-                sign_model.decoder.output_layer.weight = txt_embed.lut.weight
-            else:
-                raise ValueError(
-                    "For tied_softmax, the decoder embedding_dim and decoder "
-                    "hidden_size must be the same."
-                    "The decoder must be a Transformer."
-                )
+                if txt_embed.lut.weight.shape == sign_model.decoder.output_layer.weight.shape:
+                    # (also) share txt embeddings and softmax layer:
+                    # noinspection PyUnresolvedReferences
+                    sign_model.decoder.output_layer.weight = txt_embed.lut.weight
+                else:
+                    raise ValueError(
+                        "For tied_softmax, the decoder embedding_dim and decoder "
+                        "hidden_size must be the same."
+                        "The decoder must be a Transformer."
+                    )
 
 
     if input_data == 'feature':
