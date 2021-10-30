@@ -285,7 +285,7 @@ def validate_on_data(
                         )
                 all_gls_probs.extend([batch_gls_prob[sri] for sri in sort_reverse_index])# (batch_gls_prob)
             if do_translation:
-                if model_name.lower() in ['huggingface_transformer', 'transformer_spm']:
+                if model_name.lower() in ['huggingface_transformer', 'transformer_spm','signmodel_plm']:
                     for si in sort_reverse_index:
                         all_txt_outputs.append(batch_txt_predictions[si])
                 else:
@@ -368,7 +368,7 @@ def validate_on_data(
             valid_translation_loss = -1
             valid_ppl = -1
         # decode back to symbols
-        if model_name.lower() in ['huggingface_transformer','transformer_spm']:
+        if model_name.lower() in ['huggingface_transformer','transformer_spm', 'signmodel_plm']:
             decoded_txt = all_txt_outputs
         else:
             decoded_txt = model.module.txt_vocab.arrays_to_sentences(arrays=all_txt_outputs)
@@ -378,7 +378,7 @@ def validate_on_data(
         data_split_txt = [t for ti, t in enumerate(
             data.txt) if ti in split_indices]
         txt_ref = [join_char.join(t) for t in data_split_txt]
-        if model_name.lower() in ['huggingface_transformer', 'transformer_spm']:
+        if model_name.lower() in ['huggingface_transformer', 'transformer_spm', 'signmodel_plm']:
             txt_hyp = decoded_txt
         else:
             txt_hyp = [join_char.join(t) for t in decoded_txt]
@@ -563,9 +563,10 @@ def test(
         "translation_loss_weight", 1.0)
     do_translation = translation_loss_weight > 0.0
     distillation_loss_weight = cfg["training"].get(
-        "distillation_loss_weight", 1.0)
+        "distillation_loss_weight", 0.0)
     do_distillation = distillation_loss_weight > 0.0
     if do_distillation:
+        print('Do distillation!')
         assert do_recognition
     input_data = cfg["data"].get("input_data", "feature")
     if input_data == 'feature':
@@ -652,7 +653,7 @@ def test(
     if do_recognition:
         assert model.module.gls_vocab.stoi[SIL_TOKEN] == 0
 
-    if do_recognition:
+    if False:#do_recognition:
         # Dev Recognition CTC Beam Search Results
         dev_recognition_results = {}
         dev_best_wer_score = float("inf")
@@ -679,7 +680,7 @@ def test(
             # Recognition Parameters
             do_recognition=do_recognition,
             recognition_loss_function=recognition_loss_function if do_recognition else None,
-            recognition_loss_weight=recognition_loss_weight,
+            recognition_loss_weight=1,
             recognition_beam_size=recognition_beam_sizes,
             # Translation Parameters
             do_translation=False,
@@ -694,7 +695,7 @@ def test(
             output_attention=cfg["testing"].get("output_attention",False),
             output_feature=cfg["testing"].get("output_feature", False),
             do_distillation=do_distillation,
-            distillation_loss_weight=distillation_loss_weight
+            distillation_loss_weight=1
 
         ) #return {'}
         model.module.do_translation = do_translation
@@ -758,11 +759,11 @@ def test(
                     recognition_loss_function=recognition_loss_function
                     if do_recognition
                     else None,
-                    recognition_loss_weight=recognition_loss_weight if do_recognition else None,
+                    recognition_loss_weight=1 if do_recognition else None,
                     recognition_beam_size=1 if do_recognition else None,
                     do_translation=do_translation,
                     translation_loss_function=translation_loss_function,
-                    translation_loss_weight=translation_loss_weight,
+                    translation_loss_weight=1,
                     translation_max_output_length=translation_max_output_length,
                     txt_pad_index=txt_vocab.stoi[PAD_TOKEN],
                     gls_pad_index=gls_vocab.stoi[PAD_TOKEN],
@@ -773,7 +774,7 @@ def test(
                     output_attention=cfg["testing"].get(
                         "output_attention", False),
                     do_distillation=do_distillation,
-                    distillation_loss_weight=distillation_loss_weight
+                    distillation_loss_weight=1
                 )
                 if save_immediate_results:
                     save_immediate_results_fun(
@@ -898,7 +899,7 @@ def test(
         translation_beam_alpha=dev_best_translation_alpha if do_translation else None,
         frame_subsampling_ratio=frame_subsampling_ratio,
         do_distillation=do_distillation,
-        distillation_loss_weight=distillation_loss_weight
+        distillation_loss_weight=1
     )
 
     logger.info(
@@ -1043,12 +1044,17 @@ if __name__ == "__main__":
         "--save_subdir",
         default='immediate'
     )
+
+    parser.add_argument(
+        "--ckpt_name",
+        default='best'
+    )
     args = parser.parse_args()
     assert 'LOCAL_RANK' in os.environ, 'Only support distributed training/evaluation(gpu=1) now!'
     cfg = load_config(args.config)
     train_config = cfg["training"]
     model_dir = train_config["model_dir"]
-    ckpt = "{}/{}.ckpt".format(model_dir, 'best')
+    ckpt = "{}/{}.ckpt".format(model_dir, args.ckpt_name)
     output_name = "best.IT_best"
     if args.save_immediate_results:
         output_name += '.immediate'

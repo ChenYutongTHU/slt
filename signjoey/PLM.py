@@ -277,23 +277,6 @@ class huggingface_transformer(nn.Module):
 
         self.gls_vocab = gls_vocab
         self.txt_vocab = txt_vocab #itos
-        if self.plm_type.lower()=='mbart':        
-            self.gls_pad_index = gls_vocab.stoi[PAD_TOKEN] 
-            self.gls_lang_index = tokenizer.lang_code_to_id[src_lang]
-            self.txt_pad_index = txt_vocab.stoi[PAD_TOKEN]
-            self.txt_bos_index = tokenizer.convert_tokens_to_ids(self.tokenizer.tgt_lang)
-        elif self.plm_type.lower()=='gpt2':
-            self.gls_token_type_id = 1
-            self.txt_token_type_id = 0
-            self.gls_pad_index = gls_vocab.stoi[PAD_TOKEN] 
-            self.txt_pad_index = txt_vocab.stoi[PAD_TOKEN]
-            self.txt_pad_index_gpt = tokenizer.pad_token_id
-            self.txt_bos_index = txt_vocab.stoi[BOS_TOKEN]#! a special token
-            self.txt_bos_index_gpt = tokenizer.convert_tokens_to_ids('<s>') #0
-            self.txt_eos_index = txt_vocab.stoi[EOS_TOKEN]
-            self.txt_eos_index_gpt = tokenizer.eos_token_id
-
-
         if os.path.isfile(old2new_file):
             print('Map old id to new id use ',old2new_file)
             with open(old2new_file,'rb') as f:
@@ -309,6 +292,25 @@ class huggingface_transformer(nn.Module):
             print(old2new_file,' is not a file. Use original ids')
             self.old2new = None
             self.new2old = None
+
+        if self.plm_type.lower()=='mbart':        
+            self.gls_pad_index = gls_vocab.stoi[PAD_TOKEN] 
+            self.gls_lang_index = self.old2new[tokenizer.lang_code_to_id[src_lang]]
+            print('self.gls_lang_index', self.gls_lang_index)
+            self.txt_pad_index = txt_vocab.stoi[PAD_TOKEN]
+            self.txt_bos_index = tokenizer.convert_tokens_to_ids(self.tokenizer.tgt_lang)
+        elif self.plm_type.lower()=='gpt2':
+            self.gls_token_type_id = 1
+            self.txt_token_type_id = 0
+            self.gls_pad_index = gls_vocab.stoi[PAD_TOKEN] 
+            self.txt_pad_index = txt_vocab.stoi[PAD_TOKEN]
+            self.txt_pad_index_gpt = tokenizer.pad_token_id
+            self.txt_bos_index = txt_vocab.stoi[BOS_TOKEN]#! a special token
+            self.txt_bos_index_gpt = tokenizer.convert_tokens_to_ids('<s>') #0
+            self.txt_eos_index = txt_vocab.stoi[EOS_TOKEN]
+            self.txt_eos_index_gpt = tokenizer.eos_token_id
+
+
         
         if from_scratch:
             print('Train from scratch, re-initialize_model')
@@ -347,8 +349,8 @@ class huggingface_transformer(nn.Module):
             inputs['input_ids'] = self.map_old2new(inputs['input_ids'])
         else:
             inputs = {'input_ids':[], 'length':[], 'attention_mask':None}
-            eos_ids = [self.tokenizer.eos_token_id, self.gls_lang_index]
-            for raw_gls in batch_raw_gls:
+            eos_ids = [self.tokenizer.eos_token_id, self.gls_lang_index] # a bug here!!! self.gls_lang_index should be converted by old2new
+            for raw_gls in batch_raw_gls: 
                 input_id = [self.old2new[g] for g in raw_gls.split()] + eos_ids
                 inputs['input_ids'].append(input_id)
                 inputs['length'].append(len(input_id))
@@ -381,7 +383,7 @@ class huggingface_transformer(nn.Module):
                 return_attention_mask=True,
                 return_length=True,
                 return_tensors="pt")
-        labels['input_ids'] = self.map_old2new(labels['input_ids'])
+        labels['input_ids'] = self.map_old2new(labels['input_ids']) #tgt_lang_code are converted here (from 250003->6)
         decoder_input_ids, label_input_ids = shift_tokens_right(
             labels['input_ids'].clone(), 
             self.tokenizer.pad_token_id,
@@ -536,10 +538,6 @@ class huggingface_transformer(nn.Module):
             sgn_lengths=batch.gls_lengths)
         
 
-        #mbart_debug
-        if  0:#'dev/30August_2011_Tuesday_heute-783' in batch.sequence:
-            print('run_batch')
-            print(inputs)
 
         assert translation_beam_alpha>0, translation_beam_alpha
         if self.plm_type.lower()=='mbart':
@@ -592,6 +590,8 @@ class huggingface_transformer(nn.Module):
             print(output_dict['sequences'][0,:])
             input()
 
+
+
         output_dict['sequences'] = self.map_new2old(output_dict['sequences'])
         stacked_txt_output_decoded = self.tokenizer.batch_decode(output_dict['sequences'], 
             skip_special_tokens=True)
@@ -603,6 +603,65 @@ class huggingface_transformer(nn.Module):
             if len(d)>2 and d[-1]=='.' and d[-2]!=' ':
                 d = d[:-1]+ ' .'
                 stacked_txt_output_decoded[di] = d
+        #mbart_debug
+        if 0:#'dev/30August_2011_Tuesday_heute-783' in batch.sequence:
+            print('run_batch')
+            print(translation_beam_size, translation_beam_alpha, translation_max_output_length)
+            print(batch.sequence)
+            print(batch.gls)
+            batch_raw_gls = []
+            for i in range(batch_size):
+                raw_gls = [self.gls_vocab.itos[batch.gls[i,j]] 
+                    for j in range(batch.gls_lengths[i])
+                    if self.gls_vocab.itos[batch.gls[i,j]]!=EOS_TOKEN]
+                if self.lower_case:
+                    batch_raw_gls.append(' '.join(raw_gls.lower()))
+                else:
+                    batch_raw_gls.append(' '.join(raw_gls))
+            print(batch_raw_gls)
+            print(inputs)
+            input_embeds = []
+            for i in range(batch_size):
+                ids = inputs['input_ids'][i]
+                emb = torch.stack([self.plm.model.shared.weight[i,:] for i in ids], dim=0) #T,D
+                input_embeds.append(emb)
+            input_embeds = torch.stack(input_embeds, dim=0) #B,T,D
+            print('input_embeds')
+            #torch.set_printoptions(profile="full")
+            input_embeds = self.plm.model.encoder.embed_tokens(inputs['input_ids']) * self.plm.model.encoder.embed_scale
+            print('predict')
+            print(inputs)
+            print('decoder_start_token_id', decoder_start_token_id)
+            print('emb', self.plm.model.shared.weight[decoder_start_token_id])
+            print(output_dict['sequences'])
+            print(stacked_txt_output_decoded)
+            print('----use decoder_ids')
+            batch_start_ids = torch.ones([batch_size,1],dtype=torch.long, device=inputs['input_ids'].device)*decoder_start_token_id
+            print(batch_start_ids)
+            output_dict2 = self.plm.generate(
+                **inputs, 
+                max_length=translation_max_output_length,
+                num_beams=translation_beam_size,
+                length_penalty=translation_beam_alpha,
+                return_dict_in_generate=True,
+                output_attentions=True,
+                decoder_input_ids=batch_start_ids)
+            print(self.map_new2old(output_dict2['sequences']))
+            print('----use input_embs')
+            print(input_embeds)
+            output_dict3 = self.plm.generate(
+                inputs_embeds = input_embeds,
+                attention_mask = inputs['attention_mask'], 
+                max_length=translation_max_output_length,
+                num_beams=translation_beam_size,
+                length_penalty=translation_beam_alpha,
+                return_dict_in_generate=True,
+                output_attentions=True,
+                decoder_input_ids=batch_start_ids)
+            print(self.map_new2old(output_dict3['sequences']))
+            #input()
+
+
         # input()
         #print(stacked_txt_output_decoded)
         #stacked_attention_scores = output_dict['decoder_attentions'][0] #one for each layer
@@ -651,10 +710,8 @@ class huggingface_transformer(nn.Module):
         if 0:
             print('forward')
             print('input_ids')
-            print(inputs['input_ids'])
-            print('token_type_ids')
-            print(inputs['token_type_ids'])
-            print(torch.argmax(log_prob, dim=-1)[0,:])
+            print(inputs)
+            print(self.map_new2old(torch.argmax(log_prob, dim=-1)))
             input()
         batch_loss_sum = self.translation_loss_fun(
             log_probs=log_prob,

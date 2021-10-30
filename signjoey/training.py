@@ -106,7 +106,7 @@ class TrainManager:
         self.model = model
         self.txt_pad_index = self.model.txt_pad_index
         self.gls_pad_index = self.model.gls_pad_index
-        self.txt_bos_index = self.model.txt_bos_index
+        #self.txt_bos_index = self.model.txt_bos_index
         self._log_parameters_list()
         # Check if we are doing only recognition or only translation or both
         self.do_recognition = (
@@ -142,6 +142,17 @@ class TrainManager:
                 {'params':model.signmodel.parameters(), 'lr':slt_lr},
                 {'params':model.tokenizer.parameters(), 'lr':tok_lr},
             ]
+        elif config['model'].get('signmodel_type','vanilla')=='signmodel_plm':
+            default_lr = train_config.get("learning_rate", 1.0e-3)
+            module_lr = train_config.get("module_learning_rate",{})
+            parameters = []
+            for n, p in model.named_children():
+                lr_ = default_lr
+                for m, lr in module_lr.items():
+                    if m in n:
+                        lr_ = lr
+                parameters.append({'params':p.parameters(), 'lr':lr_})
+                print(n, lr_) 
         else:
             parameters = model.parameters()
         self.optimizer = build_optimizer(
@@ -595,21 +606,21 @@ class TrainManager:
                 if self.do_recognition:
                     if is_main_process():
                         self.tb_writer.add_scalar(
-                            "train/train_recognition_loss", recognition_loss, self.steps
+                            "train/train_recognition_loss", recognition_loss/self.recognition_loss_weight, self.steps
                         )
                     epoch_recognition_loss += recognition_loss.detach().cpu().numpy()
 
                 if self.do_translation:
                     if is_main_process():
                         self.tb_writer.add_scalar(
-                            "train/train_translation_loss", translation_loss, self.steps
+                            "train/train_translation_loss", translation_loss/self.translation_loss_weight, self.steps
                         )
                     epoch_translation_loss += translation_loss.detach().cpu().numpy()
 
                 if self.do_distillation:
                     if is_main_process():
                         self.tb_writer.add_scalar(
-                            "train/train_distillation_loss", distillation_loss, self.steps
+                            "train/train_distillation_loss", distillation_loss/self.distillation_loss_weight, self.steps
                         )
                     epoch_distillation_loss += distillation_loss.detach().cpu().numpy()
                 if self.visualize_bn and self.steps%(self.logging_freq*100)==0:
@@ -656,14 +667,14 @@ class TrainManager:
                             self.total_gls_tokens - processed_gls_tokens
                         )
                         processed_gls_tokens = self.total_gls_tokens
-                        log_out += "Batch Recognition Loss: {:10.6f} => ".format(
+                        log_out += "Batch Recognition Loss (*weight): {:10.6f} => ".format(
                             recognition_loss
                         )
                         log_out += "Gls Tokens per Sec: {:8.0f} || ".format(
                             elapsed_gls_tokens / elapsed
                         )
                     if self.do_distillation:
-                        log_out += "Batch Distillation Loss {:10.6f} => ".format(
+                        log_out += "Batch Distillation Loss (*weight) {:10.6f} => ".format(
                             distillation_loss
                         )
                     if self.do_translation:
@@ -671,7 +682,7 @@ class TrainManager:
                             self.total_txt_tokens - processed_txt_tokens
                         )
                         processed_txt_tokens = self.total_txt_tokens
-                        log_out += "Batch Translation Loss: {:10.6f} => ".format(
+                        log_out += "Batch Translation Loss (*weight): {:10.6f} => ".format(
                             translation_loss
                         )
                         log_out += "Txt Tokens per Sec: {:8.0f} || ".format(
@@ -714,7 +725,7 @@ class TrainManager:
                         recognition_loss_function=self.recognition_loss_function
                         if self.do_recognition
                         else None,
-                        recognition_loss_weight=self.recognition_loss_weight
+                        recognition_loss_weight=1
                         if self.do_recognition
                         else None,
                         recognition_beam_size=self.eval_recognition_beam_size
@@ -729,7 +740,7 @@ class TrainManager:
                         if self.do_translation
                         else None,
                         level=self.level if self.do_translation else None,
-                        translation_loss_weight=self.translation_loss_weight
+                        translation_loss_weight=1
                         if self.do_translation
                         else None,
                         translation_beam_size=self.eval_translation_beam_size
@@ -739,7 +750,7 @@ class TrainManager:
                         if self.do_translation
                         else None,
                         do_distillation=self.do_distillation,
-                        distillation_loss_weight=self.distillation_loss_weight
+                        distillation_loss_weight=1
                         if self.do_distillation
                         else None,
                         frame_subsampling_ratio=self.frame_subsampling_ratio,
@@ -1096,7 +1107,6 @@ class TrainManager:
                 #     self.cfg['model'].get('type','transformer').lower() in ['mbart','gpt2']:
                 if model_name in ['SignModel_PLM', 'huggingface_transformer']:
                     normalized_translation_loss = translation_loss #No need to normalize (token level)
-                    print(model_name)
                 else:
                     if self.translation_normalization_mode == "batch":
                         txt_normalization_factor = batch.num_seqs
