@@ -3,6 +3,7 @@ import torch, torchvision
 import torch.nn as nn
 from torch import Tensor, dist
 import torch.nn.functional as F
+from signjoey import batch
 from signjoey.vocabulary import (
     TextVocabulary,
     GlossVocabulary,
@@ -57,9 +58,16 @@ class SignModel_PLM(nn.Module):
         self.plm_cfg = plm_cfg
         self.plm_type = plm_cfg.get('type','mbart').lower()
         self.pipeline = plm_cfg.get('pipeline',False)
-        self.pipeline_debug = plm_cfg.get('pipeline_debug', False)
+        self.freeze_ctc = plm_cfg.get('freeze_ctc', False)
+        self.use_gt_gloss = plm_cfg.get('use_gt_gloss', False)
+        if self.use_gt_gloss:
+            print('use gt gloss, freeze_ctc=',self.freeze_ctc)
+            assert not self.pipeline
+            assert not do_distillation and not do_recognition
         if self.pipeline:
-            assert not do_distillation
+            assert not do_distillation and do_recognition
+
+
         assert self.plm_type in ['mbart']
         #gloss2embed
         assert os.path.isfile(plm_cfg['gloss_embedding_file'])
@@ -130,7 +138,7 @@ class SignModel_PLM(nn.Module):
             if plm_cfg.get('freeze_embed',False):
                 print('freeze plm embedding!')
                 freeze_params(self.plm_model.model.shared)
-        if 1:
+        if 0:
             print('We set self.gls_lang_index to 30 (only for debug) please reset this line afterwards')
             self.gls_lang_index = 30
             
@@ -166,12 +174,19 @@ class SignModel_PLM(nn.Module):
         self.gls_pad_index = gls_vocab.stoi[PAD_TOKEN]
         self.txt_pad_index = txt_vocab.stoi[PAD_TOKEN]  # ???
 
+        if self.freeze_ctc:
+            print('freeze_ctc ...')
+            for m in ['sgn_embed','encoder','gloss_output_layer']:
+                if hasattr(self, m):
+                    print('freeze ', m)
+                    freeze_params(getattr(self, m))
+
     def set_train(self, verbose=False):
         self.train()
-        if self.pipeline_debug:
-            self.sgn_embed.eval()
-            self.encoder.eval()
-            self.gloss_output_layer.eval()
+        if self.freeze_ctc:
+            for m in ['sgn_embed','encoder','gloss_output_layer']:
+                if hasattr(self, m):
+                    getattr(self, m).eval()
     
     def set_eval(self):
         self.eval()
@@ -272,22 +287,35 @@ class SignModel_PLM(nn.Module):
             decoder_inputs = {'decoder_input_ids':batch_start_ids} #for inference
         inputs = {**encoder_inputs, **decoder_inputs}
         return inputs
+    def convert_gls_from_tensor_to_list(self, gls_tensor, gls_lengths):
+        gls_list = []
+        batch_size = gls_tensor.shape[0]
+        gls_lengths = gls_lengths.long()
+        for i in range(batch_size):
+            gls_list.append([gls_tensor[i,j].item() for j in range(gls_lengths[i])])
+        return gls_list
 
-    def build_gloss_target_embedding(self, src_embeddings, tgt_ids):
+    def build_gloss_target_embedding(self, src_embeddings, tgt_ids, return_mask=False):
         batch_size, max_length, dim_ = src_embeddings.shape
+        new_mask = torch.zeros([batch_size, max_length], device=src_embeddings.device, dtype=torch.bool)
         with torch.no_grad():
             batch_target_embeddings = torch.zeros_like(src_embeddings) #B,T,D <pad>
             for bi in range(batch_size):
-                # print('sample ', bi)
+                #print('sample ', bi)
                 for ii,gid in enumerate(tgt_ids[bi]):
                     g_str = self.gls_vocab.itos[gid]
                     #print(gid, g_str, end=' ')
                     g_tgt_emb = self.gls2embed[g_str]
                     batch_target_embeddings[bi,ii,:] = g_tgt_emb
-                # print()
+                #print()
                 for ii in range(len(tgt_ids[bi]), max_length): #pad
                     batch_target_embeddings[bi,ii,:] = src_embeddings[bi,ii,:]
-        return batch_target_embeddings
+                new_mask[bi,:len(tgt_ids[bi])] = 1
+        #print(new_mask)
+        if return_mask:
+            return batch_target_embeddings, new_mask.unsqueeze(1)
+        else:
+            return batch_target_embeddings
 
     def compute_distillation_loss(self, src_embeddings, src_masks, tgt_ids):
         batch_size, max_length, dim_ = src_embeddings.shape
@@ -333,7 +361,8 @@ class SignModel_PLM(nn.Module):
         sgn_lengths: Tensor,
         txt_input: Tensor,
         txt_mask: Tensor = None,
-        output_attention: bool=False
+        output_attention: bool=False,
+        batch=None
     ) -> (Tensor, Tensor, Tensor, Tensor):
         encoder_outputs = self.encode(
             sgn=sgn, sgn_mask=sgn_mask, sgn_length=sgn_lengths, output_attention=output_attention
@@ -368,10 +397,15 @@ class SignModel_PLM(nn.Module):
                 src_embeddings=torch.zeros([batch_size, max_len, 1024], dtype=encoder_output.dtype, device=encoder_output.device),
                 tgt_ids=batch_pred_gls
             )
-            if 0:
-                print('forward')
-                print(batch_pred_gls)
-                print(encoder_output)
+        elif self.use_gt_gloss:
+            assert batch!=None
+            batch_size = batch.gls_lengths.shape[0]
+            max_len = torch.max(batch.gls_lengths)
+            encoder_output, sgn_mask = self.build_gloss_target_embedding(
+                src_embeddings=torch.zeros([batch_size, max_len, 1024], dtype=encoder_output.dtype, device=encoder_output.device),
+                tgt_ids=self.convert_gls_from_tensor_to_list(batch.gls, batch.gls_lengths),  #ground_truth gls
+                return_mask=True
+            )
         elif self.do_translation or self.do_distillation:
             #intermediate layer 512->1024
             encoder_output = self.preceding_layer(encoder_output)  # B,T,D'
@@ -467,6 +501,7 @@ class SignModel_PLM(nn.Module):
                 return_pred_gls=True)
 
         else:
+            new_sgn_mask = batch.sgn_mask
             gloss_probabilities = None
             decoded_gloss_sequences = None
 
@@ -477,7 +512,14 @@ class SignModel_PLM(nn.Module):
                 src_embeddings=torch.zeros([batch_size, max_len, 1024], dtype=encoder_output.dtype, device=encoder_output.device),
                 tgt_ids=batch_pred_gls
             )
-            print('pipeline!')
+        elif self.use_gt_gloss:
+            batch_size = batch.gls_lengths.shape[0]
+            max_len = torch.max(batch.gls_lengths)
+            encoder_output,  new_sgn_mask = self.build_gloss_target_embedding(
+                src_embeddings=torch.zeros([batch_size, max_len, 1024], dtype=encoder_output.dtype, device=encoder_output.device),
+                tgt_ids=self.convert_gls_from_tensor_to_list(batch.gls, batch.gls_lengths),  #ground_truth gls
+                return_mask=True
+            )
         elif self.do_translation or self.do_distillation:
             #intermediate layer 512->1024
             encoder_output = self.preceding_layer(encoder_output)  # B,T,D'
@@ -485,10 +527,6 @@ class SignModel_PLM(nn.Module):
             #print('after transform ', encoder_output.shape)
         
         if self.do_translation:
-            #to do 
-            #1. prepare inputs
-            #2. generate (search)
-            #3. decode
             inputs = self.prepare_plm_inputs(
                 input_embed=encoder_output, input_mask=new_sgn_mask,
                 txt_input=None, txt_mask=None)

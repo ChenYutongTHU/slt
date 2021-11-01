@@ -76,7 +76,8 @@ def get_loss_for_batch(
             sgn_lengths=batch.sgn_lengths,
             txt_input=batch.txt_input,
             txt_mask=batch.txt_mask,
-            output_attention=output_attention
+            output_attention=output_attention,
+            batch=batch
             )
         if model_name=='SignModel':
             assert len(outputs) == 4, len(outputs)
@@ -292,7 +293,8 @@ class SignModel(nn.Module):
         sgn_lengths: Tensor,
         txt_input: Tensor,
         txt_mask: Tensor = None,
-        output_attention: bool=False
+        output_attention: bool=False,
+        **kwargs
     ) -> (Tensor, Tensor, Tensor, Tensor):
         """
         First encodes the source sentence.

@@ -653,7 +653,7 @@ def test(
     if do_recognition:
         assert model.module.gls_vocab.stoi[SIL_TOKEN] == 0
 
-    if False:#do_recognition:
+    if do_recognition:
         # Dev Recognition CTC Beam Search Results
         dev_recognition_results = {}
         dev_best_wer_score = float("inf")
@@ -865,7 +865,10 @@ def test(
         dev_best_translation_result["valid_scores_gathered"]["rouge"] if do_translation else -1,
     )
     logger.info("*" * 60)
+    if save_immediate_results:
+        return 
 
+        
     test_best_result = validate_on_data(
         model=model,
         data=test_data,

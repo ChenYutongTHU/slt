@@ -291,7 +291,8 @@ class TrainManager:
         if distributed:
             local_rank = int(os.environ['LOCAL_RANK'])
             self.model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(self.model)
-            self.model = DDP(self.model, device_ids=[local_rank], output_device=local_rank)
+            self.model = DDP(self.model, device_ids=[local_rank], output_device=local_rank, 
+                            find_unused_parameters=('plm' in self.cfg['model'] and self.cfg['model']['plm'].get('use_gt_gloss',False)))
 
         self.register_bn_hook = train_config.get('register_bn_hook',False)
         if self.register_bn_hook:

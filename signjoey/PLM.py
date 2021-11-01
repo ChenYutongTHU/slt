@@ -552,6 +552,10 @@ class huggingface_transformer(nn.Module):
                 return_dict_in_generate=True,
                 output_attentions=True,
                 decoder_start_token_id=decoder_start_token_id)
+            if 0:
+                print('----beam_size=1')
+                print(output_dict['sequences'])
+                print(self.map_new2old(output_dict['sequences']))
         elif self.plm_type.lower()=='gpt2':
             # print('run batch')
             # print('input_ids')
@@ -608,57 +612,18 @@ class huggingface_transformer(nn.Module):
             print('run_batch')
             print(translation_beam_size, translation_beam_alpha, translation_max_output_length)
             print(batch.sequence)
-            print(batch.gls)
-            batch_raw_gls = []
-            for i in range(batch_size):
-                raw_gls = [self.gls_vocab.itos[batch.gls[i,j]] 
-                    for j in range(batch.gls_lengths[i])
-                    if self.gls_vocab.itos[batch.gls[i,j]]!=EOS_TOKEN]
-                if self.lower_case:
-                    batch_raw_gls.append(' '.join(raw_gls.lower()))
-                else:
-                    batch_raw_gls.append(' '.join(raw_gls))
-            print(batch_raw_gls)
-            print(inputs)
-            input_embeds = []
-            for i in range(batch_size):
-                ids = inputs['input_ids'][i]
-                emb = torch.stack([self.plm.model.shared.weight[i,:] for i in ids], dim=0) #T,D
-                input_embeds.append(emb)
-            input_embeds = torch.stack(input_embeds, dim=0) #B,T,D
-            print('input_embeds')
-            #torch.set_printoptions(profile="full")
-            input_embeds = self.plm.model.encoder.embed_tokens(inputs['input_ids']) * self.plm.model.encoder.embed_scale
-            print('predict')
-            print(inputs)
-            print('decoder_start_token_id', decoder_start_token_id)
-            print('emb', self.plm.model.shared.weight[decoder_start_token_id])
-            print(output_dict['sequences'])
-            print(stacked_txt_output_decoded)
-            print('----use decoder_ids')
-            batch_start_ids = torch.ones([batch_size,1],dtype=torch.long, device=inputs['input_ids'].device)*decoder_start_token_id
-            print(batch_start_ids)
+            print('----beam_size=4')
             output_dict2 = self.plm.generate(
-                **inputs, 
+                **inputs,
                 max_length=translation_max_output_length,
-                num_beams=translation_beam_size,
+                num_beams=4,
                 length_penalty=translation_beam_alpha,
                 return_dict_in_generate=True,
                 output_attentions=True,
-                decoder_input_ids=batch_start_ids)
+                decoder_start_token_id=decoder_start_token_id)
+            print(output_dict2['sequences'])
             print(self.map_new2old(output_dict2['sequences']))
-            print('----use input_embs')
-            print(input_embeds)
-            output_dict3 = self.plm.generate(
-                inputs_embeds = input_embeds,
-                attention_mask = inputs['attention_mask'], 
-                max_length=translation_max_output_length,
-                num_beams=translation_beam_size,
-                length_penalty=translation_beam_alpha,
-                return_dict_in_generate=True,
-                output_attentions=True,
-                decoder_input_ids=batch_start_ids)
-            print(self.map_new2old(output_dict3['sequences']))
+            input()
             #input()
 
 
@@ -690,6 +655,13 @@ class huggingface_transformer(nn.Module):
         This seems a little complicated yet avoids modification on the code of dataloader part
         '''
         inputs = self.prepare_inputs(sgn, sgn_lengths, txt_input, txt_mask)
+        # print(inputs)
+        # print('gls_lang_index',self.gls_lang_index)
+        # print(self.plm.model.shared.weight[self.gls_lang_index])
+        # print('tgt_lang_index {}->{}'.format(self.tokenizer.lang_code_to_id[self.tokenizer.tgt_lang], 
+        #     self.old2new[self.tokenizer.lang_code_to_id[self.tokenizer.tgt_lang]]))
+        # print(self.plm.model.shared.weight[self.old2new[self.tokenizer.lang_code_to_id[self.tokenizer.tgt_lang]]])
+        # input()
         if self.plm_type.lower()=='mbart':
             output_dict = self.plm(
                 **inputs,
