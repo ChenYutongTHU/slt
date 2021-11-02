@@ -88,7 +88,7 @@ class SignModel_PLM(nn.Module):
 
         if do_recognition:
             self.gloss_output_layer = gloss_output_layer
-        if (do_distillation or do_translation) and not self.pipeline:
+        if (do_distillation or do_translation) and not self.pipeline and not self.use_gt_gloss:
             self.preceding_layer = PrecedingLayer(
                 in_features=self.encoder.output_size,
                 out_features=1024, #mBart
