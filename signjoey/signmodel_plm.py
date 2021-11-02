@@ -51,6 +51,13 @@ class SignModel_PLM(nn.Module):
         do_distillation: bool=False,
     ):  
         super().__init__()
+        self.do_recognition = do_recognition
+        self.do_translation = do_translation
+        self.do_distillation = do_distillation
+        self.gls_vocab = gls_vocab
+        self.txt_vocab = txt_vocab
+        self.gls_pad_index = gls_vocab.stoi[PAD_TOKEN]
+        self.txt_pad_index = txt_vocab.stoi[PAD_TOKEN]  # ???
         self.sgn_embed = sgn_embed
         self.encoder = encoder
         self.sample_strategy = sample_strategy
@@ -138,6 +145,7 @@ class SignModel_PLM(nn.Module):
             if plm_cfg.get('freeze_embed',False):
                 print('freeze plm embedding!')
                 freeze_params(self.plm_model.model.shared)
+            
         if 0:
             print('We set self.gls_lang_index to 30 (only for debug) please reset this line afterwards')
             self.gls_lang_index = 30
@@ -145,6 +153,28 @@ class SignModel_PLM(nn.Module):
 
         if do_distillation:
             assert 'distillation' in plm_cfg
+            if 'gloss_embedding_layer' in plm_cfg['distillation']:
+                gls_emb_cfg = plm_cfg['distillation']['gloss_embedding_layer']
+                self.gls_emb_freeze = gls_emb_cfg.get('freeze',False)
+                self.gls_target_embedding_layer = torch.nn.Embedding(
+                    num_embeddings=len(self.gls2embed),
+                    embedding_dim=self.plm_model.config.d_model,
+                    padding_idx=self.gls_vocab.stoi[PAD_TOKEN]) # we would like a padding idx
+                #initialize
+                with torch.no_grad():
+                    for i,s in enumerate(self.gls_vocab.itos):
+                        init_emb = self.gls2embed[s]
+                        self.gls_target_embedding_layer.weight[i,:] = init_emb
+
+
+
+                if self.gls_emb_freeze:
+                    freeze_params(self.gls_target_embedding_layer)
+                print('Implement regularization target as a layer, freeze={}'.format(self.gls_emb_freeze))
+                print('Txt embedding layer in plm, freeze={}'.format(plm_cfg.get('freeze_embed',False)))
+            else:
+                self.gls_target_embedding_layer = None
+
             self.distillation_loss_type = plm_cfg['distillation'].get('loss_type','MSE')
             if self.distillation_loss_type == 'MSE':
                 self.distillation_loss_fun = nn.MSELoss(reduction='none')
@@ -166,13 +196,6 @@ class SignModel_PLM(nn.Module):
             self.txt_bos_index = self.old2new[self.tokenizer.convert_tokens_to_ids(
                 self.tokenizer.tgt_lang)]
 
-        self.do_recognition = do_recognition
-        self.do_translation = do_translation
-        self.do_distillation = do_distillation
-        self.gls_vocab = gls_vocab
-        self.txt_vocab = txt_vocab
-        self.gls_pad_index = gls_vocab.stoi[PAD_TOKEN]
-        self.txt_pad_index = txt_vocab.stoi[PAD_TOKEN]  # ???
 
         if self.freeze_ctc:
             print('freeze_ctc ...')
@@ -298,19 +321,37 @@ class SignModel_PLM(nn.Module):
     def build_gloss_target_embedding(self, src_embeddings, tgt_ids, return_mask=False):
         batch_size, max_length, dim_ = src_embeddings.shape
         new_mask = torch.zeros([batch_size, max_length], device=src_embeddings.device, dtype=torch.bool)
-        with torch.no_grad():
-            batch_target_embeddings = torch.zeros_like(src_embeddings) #B,T,D <pad>
+        if self.gls_target_embedding_layer==None:
+            with torch.no_grad():
+                batch_target_embeddings = torch.zeros_like(src_embeddings) #B,T,D <pad>
+                for bi in range(batch_size):
+                    #print('sample ', bi)
+                    for ii,gid in enumerate(tgt_ids[bi]):
+                        g_str = self.gls_vocab.itos[gid]
+                        #print(gid, g_str, end=' ')
+                        g_tgt_emb = self.gls2embed[g_str]
+                        batch_target_embeddings[bi,ii,:] = g_tgt_emb
+                    #print()
+                    for ii in range(len(tgt_ids[bi]), max_length): #pad
+                        batch_target_embeddings[bi,ii,:] = src_embeddings[bi,ii,:]
+                    new_mask[bi,:len(tgt_ids[bi])] = 1
+        else:
+            padded_tgt_ids = self.gls_vocab.stoi[PAD_TOKEN]*torch.ones(
+                [batch_size, max_length],
+                device=src_embeddings.device,
+                dtype=torch.long)
+            #B,L
             for bi in range(batch_size):
-                #print('sample ', bi)
-                for ii,gid in enumerate(tgt_ids[bi]):
-                    g_str = self.gls_vocab.itos[gid]
-                    #print(gid, g_str, end=' ')
-                    g_tgt_emb = self.gls2embed[g_str]
-                    batch_target_embeddings[bi,ii,:] = g_tgt_emb
-                #print()
-                for ii in range(len(tgt_ids[bi]), max_length): #pad
-                    batch_target_embeddings[bi,ii,:] = src_embeddings[bi,ii,:]
+                for ii, gid in enumerate(tgt_ids[bi]):
+                    padded_tgt_ids[bi,ii] = gid
                 new_mask[bi,:len(tgt_ids[bi])] = 1
+            batch_target_embeddings = self.gls_target_embedding_layer(padded_tgt_ids)
+            if 0:
+                print('padded_tgt_ids')
+                print(padded_tgt_ids)
+                print(batch_target_embeddings)
+                input()
+
         #print(new_mask)
         if return_mask:
             return batch_target_embeddings, new_mask.unsqueeze(1)
