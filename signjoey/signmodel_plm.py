@@ -60,6 +60,7 @@ class SignModel_PLM(nn.Module):
         self.txt_pad_index = txt_vocab.stoi[PAD_TOKEN]  # ???
         self.sgn_embed = sgn_embed
         self.encoder = encoder
+        self.gls_target_embedding_layer = None
         self.sample_strategy = sample_strategy
         print('sample_strategy= ', self.sample_strategy)
         self.plm_cfg = plm_cfg
@@ -374,7 +375,7 @@ class SignModel_PLM(nn.Module):
         loss = self.distillation_loss_fun(input=src_embeddings, target=batch_target_embeddings) #B,T,D
         #BTD reduce=None normalize by  valid_total_length
         eps = 1.0e-10
-        loss = torch.sum(loss)/valid_total_length+eps
+        loss = torch.sum(loss)/(valid_total_length+eps)
         return loss
 
     def encode(
