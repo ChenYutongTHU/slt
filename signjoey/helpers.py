@@ -182,8 +182,6 @@ def sparse_sample(batch_enc_op, batch_gls_prob, batch_mask, select_strategy='all
                 dim=0)  # T',D
         padded_ops.append(op)
     batch_selected_op = torch.stack(padded_ops, dim=0)  # B,T,D
-
-    
     #I don't think we need to pad pred_gls
     if return_pred_gls:
         return batch_selected_op, new_mask, batch_selected_pred_gls #list of list
@@ -403,11 +401,8 @@ def load_config(path="configs/default.yaml") -> dict:
                 use_block,
                 BLOCK2SIZE[use_block]
             ))
-    if 'load_model' in cfg:
-        cfg['model']['gloss_output_layer_version']=1
-        print('Load model from {}, set cfg.model.gloss_output_layer_version -> 1'.format(cfg['load_model']))
-    if cfg['training'].get('distillation_loss_weight',0.0)>0:
-        assert cfg['model'].get('sample_strategy','all')!='all', 'Please use sparse sample strategy when doing distillation'
+    # if cfg['training'].get('distillation_loss_weight',0.0)>0:
+    #     assert cfg['model'].get('sample_strategy','all')!='all', 'Please use sparse sample strategy when doing distillation'
     return cfg
 
 

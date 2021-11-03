@@ -97,11 +97,14 @@ class SignModel_PLM(nn.Module):
         if do_recognition:
             self.gloss_output_layer = gloss_output_layer
         if (do_distillation or do_translation) and not self.pipeline and not self.use_gt_gloss:
-            self.preceding_layer = PrecedingLayer(
-                in_features=self.encoder.output_size,
-                out_features=1024, #mBart
-                hidden_size=plm_cfg['preceding_layer'].get('hidden_size', 1024),
-                num_layers=plm_cfg['preceding_layer'].get('num_layers', 2))        
+            if self.encoder.output_size == 1024:
+                self.preceding_layer = nn.Identity()
+            else:
+                self.preceding_layer = PrecedingLayer(
+                    in_features=self.encoder.output_size,
+                    out_features=1024, #mBart
+                    hidden_size=plm_cfg['preceding_layer'].get('hidden_size', 1024),
+                    num_layers=plm_cfg['preceding_layer'].get('num_layers', 2))        
         if do_translation:
             self.plm_model = MBartForConditionalGeneration.from_pretrained(
                 plm_cfg['pretrained_dir'],
@@ -185,6 +188,13 @@ class SignModel_PLM(nn.Module):
                 self.distillation_loss_fun = nn.SmoothL1Loss(reduction='none')
             else:
                 raise ValueError
+            
+            if self.sample_strategy=='all':
+                assert 'distill_sample_strategy' in plm_cfg
+                self.distill_sample_strategy = plm_cfg['distill_sample_strategy']
+            else:
+                self.distill_sample_strategy = None
+
         if do_translation:
             self.loss_level = plm_cfg.get('loss_level', 'sentence')
             self.label_smoothing = plm_cfg.get('label_smoothing', 0.2)
@@ -455,15 +465,26 @@ class SignModel_PLM(nn.Module):
             #print('after transform ', encoder_output.shape)
 
         if self.do_distillation:
-            assert self.sample_strategy != 'all' and self.do_recognition
-            #print('after sample ', encoder_output.shape, sgn_mask.shape)
-            # from here, code differs from sign_model.forward()
-            # adapted from PLM.py
-            # input: encoder_output [B,T,D] sgn_mask [B,1,T] true/false (masked) padded
-            distillation_loss = self.compute_distillation_loss(
-                                    src_embeddings=encoder_output, 
-                                    src_masks=sgn_mask,
-                                    tgt_ids=batch_pred_gls)
+            assert self.do_recognition
+            if self.sample_strategy=='all':
+                assert self.distill_sample_strategy!=None
+                encoder_output_for_distill, sgn_mask_for_distill, batch_pred_gls_for_distill = sparse_sample(
+                    batch_enc_op=encoder_output, #after preceding layer?
+                    batch_gls_prob=gloss_probabilities.permute(
+                        1, 0, 2).detach(),  # n,t,c
+                    batch_mask=sgn_mask,  # B,1,L
+                    select_strategy=self.distill_sample_strategy,
+                    return_pred_gls=True)
+                distillation_loss = self.compute_distillation_loss(
+                    src_embeddings=encoder_output_for_distill,
+                    src_masks=sgn_mask_for_distill,
+                    tgt_ids=batch_pred_gls_for_distill)
+                
+            else:
+                distillation_loss = self.compute_distillation_loss(
+                                        src_embeddings=encoder_output, 
+                                        src_masks=sgn_mask,
+                                        tgt_ids=batch_pred_gls)
         else:
             distillation_loss = None # we don't consider distillation when using dense feature
 

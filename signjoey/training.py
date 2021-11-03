@@ -1343,8 +1343,9 @@ def train(cfg_file: str, preemptible: bool=False) -> None:
             cfg["training"]["reset_scheduler"] = False
             cfg["training"]["reset_optimizer"] = False
             cfg["training"]["resume_training"] = True
+        else:
+            cfg["training"]["resume_training"] = False
         cfg["training"]["preemptible"] = True
-        cfg["training"]["resume_training"] = False
     else:
         cfg["training"]["preemptible"] = False
         cfg["training"]["resume_training"] = False
