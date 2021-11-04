@@ -786,7 +786,7 @@ def build_model(
             elif freeze_mode=='special_tune':
                 freeze_special, freeze_normal = False, True
             
-            init_normal_file = cfg['encoder']['embeddings']['gls_embed']['init_file']
+            init_normal_file = cfg['encoder']['embeddings']['gls_embed'].get('init_file',None)
 
         gloss_output_layer_version = cfg.get('gloss_output_layer_version',1)
         print('gloss output layer version = ', gloss_output_layer_version)

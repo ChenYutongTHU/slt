@@ -68,6 +68,7 @@ class SignModel_PLM(nn.Module):
         self.pipeline = plm_cfg.get('pipeline',False)
         self.freeze_ctc = plm_cfg.get('freeze_ctc', False)
         self.use_gt_gloss = plm_cfg.get('use_gt_gloss', False)
+
         if self.use_gt_gloss:
             print('use gt gloss, freeze_ctc=',self.freeze_ctc)
             assert not self.pipeline
@@ -76,10 +77,56 @@ class SignModel_PLM(nn.Module):
             assert not do_distillation and do_recognition
 
 
+
         assert self.plm_type in ['mbart']
         #gloss2embed
         assert os.path.isfile(plm_cfg['gloss_embedding_file'])
         self.gls2embed = torch.load(plm_cfg['gloss_embedding_file'])
+
+        if 'fusion' in plm_cfg:
+            assert self.do_distillation==False
+            self.fusion = True
+            self.fusion_cfg = plm_cfg['fusion']
+            self.fusion_method = self.fusion_cfg['method']
+            self.fusion_fc = self.fusion_cfg['fusion_fc']
+            print('Implementing fusion ', self.fusion_method) #after 'before_add_word_embedding'
+            self.fusion_use_gloss, self.fusion_use_vis = self.fusion_cfg['use_gloss'], self.fusion_cfg['use_vis']
+            assert self.fusion_use_vis, 'currently do not support fusion_use_vis=False'
+            if self.fusion_method == 'prepend':
+                assert self.fusion_use_gloss
+            # if not self.fusion_use_vis:
+            #     if hasattr(self, 'preceding_layer'):
+            #         print('visual input is not used -> preceding layer is not used, freeze it')
+            #         freeze_params(self.preceding_layer)
+            if self.fusion_fc:
+                print('Linear transform after fusion')
+                assert self.fusion_use_gloss and self.fusion_use_vis
+                assert self.fusion_method in ['plus','cat']
+                if self.fusion_method=='plus':
+                    self.fusion_fc = torch.nn.Linear(1024, 1024)
+                elif self.fusion_method=='cat':
+                    self.fusion_fc = torch.nn.Linear(2048, 1024)
+                else:
+                    raise ValueError
+            else:
+                self.fusion_fc = torch.nn.Identity()
+            self.gls_target_embedding_layer = torch.nn.Embedding(
+                num_embeddings=len(self.gls2embed),
+                embedding_dim=1024,
+                padding_idx=self.gls_vocab.stoi[PAD_TOKEN]) # we would like a padding idx
+            #initialize
+            with torch.no_grad():
+                for i,s in enumerate(self.gls_vocab.itos):
+                    init_emb = self.gls2embed[s]
+                    self.gls_target_embedding_layer.weight[i,:] = init_emb
+            if self.fusion_cfg['freeze_gloss_embedding']:
+                freeze_params(self.gls_target_embedding_layer)
+                print('gls_target_embedding_layer freeze=True')
+            else:
+                print('gls_target_embedding_layer freeze=False')
+            print('Txt embedding layer in plm, freeze={}'.format(plm_cfg.get('freeze_embed',False)))
+        else:
+            self.fusion = False
 
         if self.plm_type == 'mbart':
             if 'overwrite_mbart_cfg' in plm_cfg:
@@ -271,13 +318,27 @@ class SignModel_PLM(nn.Module):
         decoder_attention_mask = labels['attention_mask'] #attention mask keeps the same after shifting
         return label_input_ids.to(device), decoder_input_ids.to(device), decoder_attention_mask.to(device)
 
-    def prepare_plm_inputs(self,input_embed, input_mask, txt_input=None, txt_mask=None):
+    def prepare_plm_inputs(self,input_embed, input_mask, txt_input=None, txt_mask=None,
+            fusion=False, batch_pred_ids=None):
         #here we need to append </s> <src_lang_code>  to input_embed
         # print('eos_index', self.gls_eos_index)
         # print('gls_lang_index', self.gls_lang_index)
         eos_embedding = self.plm_model.model.shared.weight[self.gls_eos_index,:]
         src_lang_code_embedding = self.plm_model.model.shared.weight[self.gls_lang_index,:]
         suffix_emb = torch.stack([eos_embedding, src_lang_code_embedding], dim=0) # 2,1024
+        if fusion:
+            assert batch_pred_ids!=None
+            gloss_embeddings, gloss_mask = self.build_gloss_target_embedding(
+                src_embeddings=input_embed,
+                tgt_ids=batch_pred_ids,
+                return_mask=True
+            )
+            if self.fusion_use_gloss and not self.fusion_use_vis:
+                return self.prepare_plm_inputs(
+                    input_embed = gloss_embeddings,
+                    input_mask = gloss_mask,
+                    txt_input = txt_input,
+                    txt_mask = txt_mask, fusion=False)
 
         #input_embed_appended = torch.stacm
         input_mask = input_mask.squeeze(1) #B,L
@@ -297,7 +358,61 @@ class SignModel_PLM(nn.Module):
             input_embed_w_suffix.append(padded_emb_w_suffix)
             input_mask_w_suffix[i,:valid_lengths[i]+2] = 1
         input_embed_w_suffix = torch.stack(input_embed_w_suffix, dim=0) #B,L,D
-        input_embed_w_suffix = input_embed_w_suffix*self.plm_embed_scale
+
+        if fusion:
+            assert self.fusion_use_vis #currently, don't support only use gloss embeddings here?
+            if self.fusion_method=='prepend' and self.fusion_use_gloss:
+                #we don't need any fc layer? yes the visual feature has already been transformed before (preceding layer)
+                fusion_input_embed_w_suffix = []
+                max_length = 2*max_length_wo_suffix + 2
+                new_input_mask_w_suffix = torch.zeros([batch_size, max_length],dtype=torch.long, device=gloss_embeddings.device)
+                for bi in range(batch_size):
+                    gls_embed = gloss_embeddings[bi, :valid_lengths[bi]]
+                    input_embed_prepended = torch.cat([gls_embed, input_embed_w_suffix[bi,:]],dim=0) 
+                    pad_len = max_length-input_embed_prepended.shape[0]
+                    if pad_len>=0:
+                        paddings = torch.zeros([pad_len,dim_],
+                            device=gloss_embeddings.device, 
+                            dtype=gloss_embeddings.dtype)
+                        padded_input_embed_prepended = torch.cat([input_embed_prepended,paddings], dim=0)
+                    else:
+                        padded_input_embed_prepended = input_embed_prepended
+                    fusion_input_embed_w_suffix.append(padded_input_embed_prepended)
+                    new_input_mask_w_suffix[bi, :input_embed_prepended.shape[0]] = 1
+                #input_mask_w_suffix = new_input_mask_w_suffix
+                fusion_input_embed_w_suffix = torch.stack(fusion_input_embed_w_suffix, dim=0)
+                input_mask_w_suffix = new_input_mask_w_suffix
+            else:
+                #replace pad with zero
+                zeros = torch.zeros_like(gloss_embeddings)
+                gloss_embeddings = torch.where(
+                    gloss_mask.transpose(1,2),#B,L,1
+                    gloss_embeddings,
+                    zeros) 
+                #append  another two zeros
+                zeros_suffix = torch.zeros([batch_size, 2, dim_], dtype=gloss_embeddings.dtype, device=gloss_embeddings.device)
+                gloss_embedding_w_suffix = torch.cat([gloss_embeddings, zeros_suffix], dim=1) #B,L,D B,2,D
+                if self.fusion_method=='plus':
+                    fusion_input_embed_w_suffix = 0
+                    if self.fusion_use_vis:
+                        fusion_input_embed_w_suffix += input_embed_w_suffix
+                    if self.fusion_use_gloss:
+                        fusion_input_embed_w_suffix += gloss_embedding_w_suffix
+                elif self.fusion_method=='cat':
+                    fusion_input_embed_w_suffix = []
+                    if self.fusion_use_vis:
+                        fusion_input_embed_w_suffix.append(input_embed_w_suffix)
+                    if self.fusion_use_gloss:
+                        fusion_input_embed_w_suffix.append(gloss_embedding_w_suffix)
+                    fusion_input_embed_w_suffix = torch.cat(fusion_input_embed_w_suffix, dim=-1) #B,L,2D
+                elif self.fusion_method=='prepend':
+                    raise ValueError #prepend
+                #fc layer!
+            fusion_input_embed_w_suffix = self.fusion_fc(fusion_input_embed_w_suffix)
+            input_embed_w_suffix = fusion_input_embed_w_suffix*self.plm_embed_scale
+
+        else:
+            input_embed_w_suffix = input_embed_w_suffix*self.plm_embed_scale
 
         encoder_inputs = {
             'inputs_embeds': input_embed_w_suffix, #B,L,D
@@ -353,9 +468,12 @@ class SignModel_PLM(nn.Module):
                 dtype=torch.long)
             #B,L
             for bi in range(batch_size):
+                #print('sample ', bi)
                 for ii, gid in enumerate(tgt_ids[bi]):
+                    #print(self.gls_vocab.itos[gid], end=' ')
                     padded_tgt_ids[bi,ii] = gid
                 new_mask[bi,:len(tgt_ids[bi])] = 1
+                #print()
             batch_target_embeddings = self.gls_target_embedding_layer(padded_tgt_ids)
             if 0:
                 print('padded_tgt_ids')
@@ -489,10 +607,21 @@ class SignModel_PLM(nn.Module):
             distillation_loss = None # we don't consider distillation when using dense feature
 
         if self.do_translation:
-            #encoder_output -> translation loss 
-            inputs = self.prepare_plm_inputs(
-                input_embed=encoder_output, input_mask=sgn_mask,
-                txt_input=txt_input, txt_mask=txt_mask)  
+            #encoder_output -> translation loss
+            if self.fusion: 
+                assert self.sample_strategy!='all'
+                #input batch_pred_gls
+                inputs = self.prepare_plm_inputs(
+                    input_embed=encoder_output, input_mask=sgn_mask,
+                    txt_input=txt_input, txt_mask=txt_mask,
+                    fusion=True, 
+                    batch_pred_ids=batch_pred_gls)  
+                # print(inputs)
+                # input()
+            else:
+                inputs = self.prepare_plm_inputs(
+                    input_embed=encoder_output, input_mask=sgn_mask,
+                    txt_input=txt_input, txt_mask=txt_mask)                  
             # 'input_ids', 'attention_mask', 'decoder_input_ids' 'decoder_attention_mask' 'labels'
             output_dict = self.plm_model(
                 **inputs, 
