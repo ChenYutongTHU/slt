@@ -17,6 +17,7 @@ from transformers import MBartForConditionalGeneration, MBartTokenizer
 from signjoey.loss import XentLoss
 from collections import defaultdict
 from signjoey.helpers import freeze_params, sparse_sample, shift_tokens_right, ctc_decode_func
+from copy import deepcopy
 
 class PrecedingLayer(nn.Module):
     def __init__(
@@ -253,6 +254,9 @@ class SignModel_PLM(nn.Module):
             self.gls_eos_index = self.old2new[self.tokenizer.eos_token_id]
             self.txt_bos_index = self.old2new[self.tokenizer.convert_tokens_to_ids(
                 self.tokenizer.tgt_lang)]
+            self.txt_eos_index = self.old2new[self.tokenizer.eos_token_id]
+            print('txt_eos_index', self.txt_eos_index)
+
 
 
         if self.freeze_ctc:
@@ -284,7 +288,7 @@ class SignModel_PLM(nn.Module):
     def map_new2old(self, batch_input_ids):
         if self.old2new==None:
             return batch_input_ids
-        new_batch_input_ids = batch_input_ids#.clone()
+        new_batch_input_ids = deepcopy(batch_input_ids)#.clone()
         for bi,input_ids in enumerate(batch_input_ids):
             for ii, id_ in enumerate(input_ids):
                 if id_.item() in [self.gls_lang_index]: #say 31
@@ -685,6 +689,9 @@ class SignModel_PLM(nn.Module):
                     decoded_gloss_sequences[rbs] = ctc_decode_func(
                         tf_gloss_probabilities, batch, rbs, gloss_scores)
 
+            # print('run batch')
+            # print('sample_strategy', self.sample_strategy)
+            # input()
             encoder_output, new_sgn_mask, batch_pred_gls = sparse_sample(
                 batch_enc_op=encoder_output,
                 batch_gls_prob=gloss_probabilities_0,  # n,t,c
@@ -735,26 +742,6 @@ class SignModel_PLM(nn.Module):
             stacked_txt_output_decoded = self.tokenizer.batch_decode(output_dict['sequences'], 
                 skip_special_tokens=True)
 
-            if 0: #'dev/11August_2010_Wednesday_tagesschau-2' in batch.sequence or 'dev/11August_2010_Wednesday_tagesschau-3' in batch.sequence:
-                print('run batch  sgnmodel_plm')
-                print(translation_beam_size, translation_beam_alpha, translation_max_output_length)
-                print(batch.sequence)
-                print(inputs)
-                print('pred gls')
-                print(batch_pred_gls)
-                print('decoder input embed', self.txt_bos_index)
-                print(self.plm_model.model.shared.weight.data[self.txt_bos_index])
-                batch_raw_gls = []
-                for i in range(len(batch_pred_gls)):
-                    raw_gls = [] 
-                    for g in batch_pred_gls[i]:
-                        raw_gls.append(self.gls_vocab.itos[g])
-                    batch_raw_gls.append(' '.join(raw_gls))
-                print('convert to str')
-                print(batch_raw_gls)
-                print(output_dict['sequences'])
-                print(stacked_txt_output_decoded)
-                #input()
 
             #!! split end common and the last word!
             #print(stacked_txt_output_decoded) #list of string
@@ -771,4 +758,149 @@ class SignModel_PLM(nn.Module):
             return decoded_gloss_sequences, stacked_txt_output_decoded, stacked_attention_scores, gloss_probabilities_0.cpu().numpy()
         else:
             return decoded_gloss_sequences, stacked_txt_output_decoded, stacked_attention_scores, None
+
+    def run_batch_ensemble_translation(
+        self,
+        batch,
+        max_ensemble_n: int=10,
+        num_return_sequences: int=1,
+        ensemble_sample_random: str='uniform', #or weighted by probabilities
+        translation_beam_size: int=4,
+        translation_beam_alpha: float=1,
+        translation_max_output_length: int = 100,
+    ):  
+        assert num_return_sequences <= translation_beam_size
+        assert not self.sample_strategy=='all'
+        assert self.do_recognition and self.do_translation and not self.pipeline and not self.use_gt_gloss
+        encoder_outputs0, encoder_hidden = self.encode(
+            sgn=batch.sgn, sgn_mask=batch.sgn_mask, sgn_length=batch.sgn_lengths
+        ) #keep the same
+        batch_size = encoder_outputs0.shape[0]        
+        gloss_scores = self.gloss_output_layer(encoder_outputs0) 
+        gloss_probabilities = gloss_scores.log_softmax(2) #B,D,L
+
+        from helpers import get_all_combinations
+        import random
+        ensemble_predictions_decoded = [[] for i in range(batch_size)]
+        device = encoder_outputs0.device
+        batch_predictions = []
+        for i in range(batch_size):
+            #process one by one
+
+            # step1. collect possible combinations
+            length = torch.sum(batch.sgn_mask[i]) #B,1,L
+            all_combinations_ids = get_all_combinations(gls_prob=gloss_probabilities[i, :length])  
+            if len(all_combinations_ids)>max_ensemble_n:
+                select_comb_ind = np.random.permutation(np.arange(len(all_combinations_ids)))[:max_ensemble_n]
+                all_combinations_ids = [all_combinations_ids[ind] for ind in select_comb_ind]
+                ensemble_n = max_ensemble_n
+            else:
+                ensemble_n = len(all_combinations_ids)
+
+            # step2. prepare encoder_output_sample new_sgn_mask and generate
+            sparse_samples = [{} for ii in range(ensemble_n)]
+            for ci, comb_ids in enumerate(all_combinations_ids):
+                # a list
+                encoder_output_sample = torch.stack(
+                    [encoder_outputs0[i,id_,:] for id_ in comb_ids], dim=0).unsqueeze(0) #1,T,D
+                new_sgn_mask = torch.ones(
+                    [1,1,len(comb_ids)], 
+                    dtype=batch.sgn_mask.dtype,
+                    device=batch.sgn_mask.device)
+                if hasattr(self, 'preceding_layer'):
+                    encoder_output_sample = self.preceding_layer(encoder_output_sample)
+                sparse_samples[ci] = {
+                    'encoder_output_sample':encoder_output_sample,
+                    'new_sgn_mask': new_sgn_mask}
+                sparse_samples[ci]['encoder_inputs'] = self.prepare_plm_inputs(
+                    input_embed=encoder_output_sample, input_mask=new_sgn_mask,
+                    txt_input=None, txt_mask=None
+                )              
+                #translate
+                sparse_samples[ci]['output_sequences'] = self.plm_model.generate(
+                    **sparse_samples[ci]['encoder_inputs'],
+                    max_length=translation_max_output_length,
+                    num_beams=translation_beam_size,
+                    num_return_sequences=num_return_sequences,
+                    length_penalty=translation_beam_alpha,
+                    #return_dict_in_generate=True,
+                    output_attentions=False)  # some redundant computation is made here, I'll improve it later                  
+                if 1:
+                    #print(num_return_sequences)
+                    #print(sparse_samples[ci]['output_sequences'].shape)
+                    #print debug
+                    sparse_samples[ci]['output_sequences_mapped'] = self.map_new2old(sparse_samples[ci]['output_sequences'])
+                    sparse_samples[ci]['stacked_txt_output_decoded'] = self.tokenizer.batch_decode(
+                        sparse_samples[ci]['output_sequences_mapped'], 
+                        skip_special_tokens=True)                  
+                    #print(len(sparse_samples[ci]['stacked_txt_output_decoded']))
+                    for b in range(1):
+                        #print('example #',b)
+                        for j in range(num_return_sequences):
+                            ind = b*num_return_sequences+j
+                            #print(sparse_samples[ci]['stacked_txt_output_decoded'][ind])
+                        #print()    
+                    #input()  
+                    ensemble_predictions_decoded[i].append(sparse_samples[ci]['stacked_txt_output_decoded'])
+
+            # step3. compute average score
+            #  sparse_samples[ci]: 'encoder_inputs'
+            #print('self.txt_bos_index', self.txt_bos_index)
+            best_scores = None
+            best_hyp = None
+            for ci in range(ensemble_n):
+                sparse_samples[ci]['scores'] = []
+                for si in range(num_return_sequences):
+                    #for each hypothesis
+                    hypothesis = sparse_samples[ci]['output_sequences'][si].detach().cpu().numpy() #new id
+                    hyp_input, hyp_label = [] ,[]
+                    for h in hypothesis:
+                        if h == self.txt_bos_index:
+                            hyp_input.append(h)
+                        elif h == self.txt_eos_index:
+                            hyp_label.append(h)
+                            break
+                        else:
+                            hyp_input.append(h)
+                            hyp_label.append(h)
+                    # print(hypothesis)
+                    # print(hyp_input)
+                    # print(hyp_label)
+                    # input()
+                    # compute loss for each inputs_embeds
+                    hyp_len = len(hyp_input)
+                    hyp_input = torch.tensor(hyp_input, dtype=torch.long, device=device).unsqueeze(0)
+                    hyp_label = torch.tensor(hyp_label, dtype=torch.long, device=device).unsqueeze(0)
+                    scores = []
+                    for cii in range(ensemble_n):
+                        outputs_dict = self.plm_model(
+                            inputs_embeds=sparse_samples[cii]['encoder_inputs']['inputs_embeds'],
+                            attention_mask=sparse_samples[cii]['encoder_inputs']['attention_mask'],
+                            decoder_input_ids=hyp_input,
+                            decoder_attention_mask=torch.ones([1, hyp_len], device=device, dtype=torch.bool),
+                            labels=hyp_label,
+                            return_dict=True
+                        )
+                        XE_loss = torch.nn.CrossEntropyLoss(reduction='sum') # no length penalty, normalize by length[]
+                        score = -1*XE_loss(outputs_dict['logits'].view(hyp_len,-1), hyp_label.view(-1)) #batch_size=1 -logprob
+                        score = score/(hyp_len**translation_beam_alpha)
+                        #log_probs = torch.nn.functional.log_softmax(outputs_dict['logits'], dim=-1)  # B(1), T, L
+                        #score = self.translation_loss_fun(log_probs,targets=hyp_label).detach().cpu().item()
+                        scores.append(score.item())
+                        #print(ci,si, cii, score.item())
+                    scores = np.mean(scores)
+                    sparse_samples[ci]['scores'].append(scores)
+                #print(sparse_samples[ci]['scores'])
+                for sii, s in enumerate(sparse_samples[ci]['scores']):
+                    if best_scores==None or s > best_scores:
+                        best_scores = s
+                        best_hyp = sparse_samples[ci]['stacked_txt_output_decoded'][sii]
+            
+            # print(best_scores)
+            # print(best_hyp)
+            # input()
+            batch_predictions.append(best_hyp.replace('.',' .'))
+        #ensemle_predictions
+        #print(batch_predictions)
+        return batch_predictions
 

@@ -176,6 +176,9 @@ class Batch:
         if self.input_data == 'gloss':
             rev_index = list(range(0, len(self.gls_lengths)))
             return rev_index
+        if self.input_data == 'feature':
+            rev_index = list(range(0, len(self.gls_lengths)))
+            return rev_index
             #don't sort
 
         _, perm_index = self.sgn_lengths.sort(0, descending=True)

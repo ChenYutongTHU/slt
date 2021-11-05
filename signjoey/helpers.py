@@ -66,6 +66,45 @@ def shift_tokens_right(input_ids: torch.Tensor, pad_token_id: int, ignore_index:
 
     return prev_output_tokens,input_ids
 
+
+def traverse(results, cur_res, sp, cur_id):
+    if cur_id >= len(sp):
+        results.append(cur_res)
+        return 
+    else:
+        for sid in sp[cur_id]:
+            cur_res_extend = cur_res +[sid]
+            traverse(results, cur_res_extend, sp, cur_id+1)
+#traverse
+def get_all_combinations(gls_prob):
+    t = gls_prob.shape[0]
+    sort_idx = torch.argsort(gls_prob, dim=1, descending=True) #T,d
+    gls_pred = torch.argmax(gls_prob, axis=1) #T
+    num = torch.sum(torch.argmax(gls_prob, axis=1) != 0)
+    if not num:
+        return [[i for i in range(t)]]
+    spans = []
+    i,j = 0,0
+    while i<t:
+        span_id = []
+        while i < t and sort_idx[i, 0] == 0:
+            i += 1
+        if i >= t:
+            break
+        j = i
+        cur_pred = sort_idx[i, 0]
+        while j < t and sort_idx[j, 0] == cur_pred:
+            span_id.append(j)  # top1
+            j += 1
+        spans.append(span_id)
+        i = j
+    
+    results = []
+    traverse(results, [], spans, 0)
+
+    return results
+
+
 def sparse_sample(batch_enc_op, batch_gls_prob, batch_mask, select_strategy='all', return_pred_gls=False):
     #enc_op B,T,D
     #gls_prob B,T,C

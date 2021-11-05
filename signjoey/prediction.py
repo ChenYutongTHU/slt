@@ -88,6 +88,8 @@ def validate_on_data(
     output_feature: bool=False,
     do_distillation: bool=False,
     distillation_loss_weight: float=0,
+    translation_ensemble_test: bool=False,
+    translation_ensemble_test_cfg: dict={}
 ) -> (
     float,
     float,
@@ -205,6 +207,7 @@ def validate_on_data(
         total_num_seqs = 0
         split_gls = []
         split_txt = []
+        seq2ensemble_predictions = {}
         for batch in tqdm(iter(valid_iter), disable=os.environ['WORLD_SIZE']!='1'):
             split_gls.append(batch.gls)
             split_txt.append(batch.txt)
@@ -261,6 +264,15 @@ def validate_on_data(
                     output_gloss_prob=do_recognition
                 )
                 
+                if translation_ensemble_test:
+                    batch_txt_predictions = model.module.run_batch_ensemble_translation(
+                        batch=batch,
+                        **translation_ensemble_test_cfg)
+                    for bb, pred in enumerate(batch_txt_predictions):
+                        seq = batch.sequence[bb]
+                        seq2ensemble_predictions[seq] = pred
+
+
             if do_recognition:
                 total_recognition_loss += batch_recognition_loss.item()
                 total_num_gls_tokens += batch.num_gls_tokens
@@ -294,6 +306,8 @@ def validate_on_data(
                 all_attention_scores.extend(
                     [batch_attention_scores[si] for si in sort_reverse_index]
                 )
+        
+
     #torch.distributed.barrier()
     torch.cuda.empty_cache()
     #data -> data_split
@@ -495,6 +509,8 @@ def validate_on_data(
         for k, sc in estimated_mean_scores.items():
             results[k]['valid_scores_gathered'] = sc
     torch.cuda.empty_cache()
+    if translation_ensemble_test==True:
+        results['seq2ensemble_predictions'] =  translation_ensemble_test
     return results
 
 
@@ -774,7 +790,13 @@ def test(
                     output_attention=cfg["testing"].get(
                         "output_attention", False),
                     do_distillation=do_distillation,
-                    distillation_loss_weight=1
+                    distillation_loss_weight=1,
+                    translation_ensemble_test='translation_ensemble_test' in cfg["testing"],
+                    translation_ensemble_test_cfg = {
+                        **cfg["testing"].get('translation_ensemble_test',{}),
+                        'translation_beam_size':tbw,
+                        'translation_beam_alpha':ta
+                    }
                 )
                 if save_immediate_results:
                     save_immediate_results_fun(
@@ -902,8 +924,11 @@ def test(
         translation_beam_alpha=dev_best_translation_alpha if do_translation else None,
         frame_subsampling_ratio=frame_subsampling_ratio,
         do_distillation=do_distillation,
-        distillation_loss_weight=1
+        distillation_loss_weight=1,
+        translation_ensemble_test='translation_ensemble_test' in cfg["testing"],
+        translation_ensemble_test_cfg = cfg["testing"].get('translation_ensemble_test',{})
     )
+
 
     logger.info(
         "[TEST] partition [Recognition & Translation] results:\n\t"
@@ -1052,6 +1077,17 @@ if __name__ == "__main__":
         "--ckpt_name",
         default='best'
     )
+
+    parser.add_argument(
+        '--test_random_seed',
+        type=int, 
+        default=42
+    )
+
+    parser.add_argument(
+        '--log_name',
+        default='test'
+    )
     args = parser.parse_args()
     assert 'LOCAL_RANK' in os.environ, 'Only support distributed training/evaluation(gpu=1) now!'
     cfg = load_config(args.config)
@@ -1064,8 +1100,8 @@ if __name__ == "__main__":
         model_dir = os.path.join(model_dir,args.save_subdir)
         make_model_dir(model_dir, overwrite=False)
     output_path = os.path.join(model_dir, output_name)
-    logger = make_logger(model_dir=model_dir, log_file='test.rank{}.log'.format(os.environ['RANK']))
-
+    logger = make_logger(model_dir=model_dir, log_file='{}.rank{}.log'.format(args.log_name, os.environ['RANK']))
+    set_seed(seed=args.test_random_seed)
     distributed = 'WORLD_SIZE' in os.environ
     if distributed:
         local_rank = int(os.environ['LOCAL_RANK'])
