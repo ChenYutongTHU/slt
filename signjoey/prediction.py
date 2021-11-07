@@ -86,6 +86,7 @@ def validate_on_data(
     use_amp: bool=False,
     output_attention: bool=False,
     output_feature: bool=False,
+    output_translation_input: bool=False,
     do_distillation: bool=False,
     distillation_loss_weight: float=0,
     translation_ensemble_test: bool=False,
@@ -199,6 +200,8 @@ def validate_on_data(
         if output_feature:
             all_sgn_feature = []
             all_encoder_outputs = []
+        if output_translation_input:
+            all_translation_input = []
         total_recognition_loss = 0
         total_translation_loss = 0
         total_distillation_loss = 0
@@ -208,14 +211,14 @@ def validate_on_data(
         split_gls = []
         split_txt = []
         seq2ensemble_predictions = {}
-        for batch in tqdm(iter(valid_iter), disable=os.environ['WORLD_SIZE']!='1'):
+        for batch in tqdm(iter(valid_iter), disable=True):#os.environ['WORLD_SIZE']!='1'):
             split_gls.append(batch.gls)
             split_txt.append(batch.txt)
 
             batch._make_cuda()
             sort_reverse_index = batch.sort_by_sgn_lengths() 
             with torch.cuda.amp.autocast(enabled=use_amp):
-                batch_recognition_loss, batch_translation_loss, batch_distillation_loss, attention, encoder_outputs = get_loss_for_batch(
+                batch_recognition_loss, batch_translation_loss, batch_distillation_loss, other_outputs = get_loss_for_batch(
                     model=model,
                     batch=batch,
                     recognition_loss_function=recognition_loss_function
@@ -237,14 +240,21 @@ def validate_on_data(
                     output_attention=output_attention
                 )
                 if output_attention:
-                    assert attention!=None #tensor B,Headsize, L, L
+                    assert 'attention' in other_outputs#tensor B,Headsize, L, L
+                    attention = other_outputs['attention']
                     all_self_attention_scores += [attention[si].detach().cpu().numpy() 
                         for si in sort_reverse_index]
 
                 if output_feature:
-                    # T,D
+                    assert 'encoder_outputs' in other_outputs
+                    encoder_outputs = other_outputs['encoder_outputs']
                     all_sgn_feature += [batch.sgn[si].cpu().numpy() for si in sort_reverse_index]
                     all_encoder_outputs += [encoder_outputs[si].cpu().numpy() for si in sort_reverse_index] #T,D
+
+                if output_translation_input:
+                    assert 'translation_input' in other_outputs, batch_size==1
+                    translation_input = other_outputs['translation_input']
+                    all_translation_input += [translation_input[si].cpu().numpy() for si in sort_reverse_index] #B,L,D
 
                 (
                     batch_gls_predictions,
@@ -432,7 +442,9 @@ def validate_on_data(
         assert int(os.environ['WORLD_SIZE']) == 1, os.environ['WORLD_SIZE']
         results['all_sgn_feature'] = all_sgn_feature
         results['all_encoder_outputs'] = all_encoder_outputs
-
+    if output_translation_input:
+        assert int(os.environ['WORLD_SIZE']) == 1, os.environ['WORLD_SIZE']
+        results['all_translation_input'] = all_translation_input       
     #all gather
     valid_scores_cuda_gather = [None for _ in range(int(os.environ['WORLD_SIZE']))]
     torch.distributed.all_gather_object(
@@ -549,6 +561,11 @@ def test(
             raise FileNotFoundError(
                 "No checkpoint found in directory {}.".format(model_dir)
             )
+
+    if "output_translation_input" in cfg["testing"]:
+        print('output_translation_input set batch_size=1 to prevent padding!')
+        cfg["training"]["batch_size"] = 1
+
     batch_size = cfg["training"]["batch_size"]
     batch_type = cfg["training"].get("batch_type", "sentence")
     use_cuda = cfg["training"].get("use_cuda", False)
@@ -721,10 +738,10 @@ def test(
             save_immediate_results_fun(
                 data=dev_data,
                 output_file_format=output_path+'.{}.dev',
-                gls_prob=dev_recognition_results['gls_prob'] if 'gls_prob' in dev_recognition_results else None,
-                encoder_attention=dev_recognition_results['all_self_attention_scores'] if 'all_self_attention_scores' in dev_recognition_results else None,
-                sgn_feature=dev_recognition_results['all_sgn_feature'],
-                encoder_outputs=dev_recognition_results['all_encoder_outputs'])
+                gls_prob=dev_recognition_results.get('gls_prob',None),
+                encoder_attention=dev_recognition_results.get('all_self_attention_scores',None),
+                sgn_feature=dev_recognition_results.get('all_sgn_feature',None),
+                encoder_outputs=dev_recognition_results.get('all_encoder_outputs',None))
 
         for rbw in recognition_beam_sizes:
             if dev_recognition_results[rbw]["valid_scores_gathered"]["wer"] < dev_best_wer_score:
@@ -789,6 +806,7 @@ def test(
                     output_feature=cfg["testing"].get("output_feature",False),
                     output_attention=cfg["testing"].get(
                         "output_attention", False),
+                    output_translation_input=cfg["testing"].get('output_translation_input', False),
                     do_distillation=do_distillation,
                     distillation_loss_weight=1,
                     translation_ensemble_test='translation_ensemble_test' in cfg["testing"],
@@ -802,14 +820,16 @@ def test(
                     save_immediate_results_fun(
                         data=dev_data,
                         output_file_format=output_path+'.{}.dev_'+str(tbw)+'_'+str(ta),
-                        decoder_attention=dev_translation_results[tbw][ta]['all_attention_scores'])
+                        decoder_attention=dev_translation_results[tbw][ta].get('all_attention_scores',None),
+                        translation_input=dev_translation_results[tbw][ta].get('all_translation_input',None))
                     if not do_recognition:
                         save_immediate_results_fun(
                             data=dev_data,
                             output_file_format=output_path+'.{}.dev',
-                            encoder_attention=dev_translation_results[tbw][ta]['all_self_attention_scores'] if 'all_self_attention_scores' in dev_translation_results[tbw][ta] else None,
-                            encoder_outputs=dev_translation_results[tbw][ta]['all_encoder_outputs'],
-                            sgn_feature=dev_translation_results[tbw][ta]['all_sgn_feature'])
+                            encoder_attention=dev_translation_results[tbw][ta].get('all_self_attention_scores',None),
+                            encoder_outputs=dev_translation_results[tbw][ta].get('all_encoder_outputs',None),
+                            sgn_feature=dev_translation_results[tbw][ta].get('all_sgn_feature',None),
+                            translation_input=dev_translation_results[tbw][ta].get('all_translation_input',None))
 
                 if (
                     dev_translation_results[tbw][ta]["valid_scores_gathered"]["bleu"]

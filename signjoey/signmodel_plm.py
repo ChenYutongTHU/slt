@@ -61,6 +61,8 @@ class SignModel_PLM(nn.Module):
         self.txt_pad_index = txt_vocab.stoi[PAD_TOKEN]  # ???
         self.sgn_embed = sgn_embed
         self.encoder = encoder
+        self.input_feature_after_sgnmbed = plm_cfg.get('input_feature_after_sgnmbed',False)
+        print('input feature after sgnembed to translation net')
         self.gls_target_embedding_layer = None
         self.sample_strategy = sample_strategy
         print('sample_strategy= ', self.sample_strategy)
@@ -146,7 +148,24 @@ class SignModel_PLM(nn.Module):
             self.gloss_output_layer = gloss_output_layer
         if (do_distillation or do_translation) and not self.pipeline and not self.use_gt_gloss:
             if self.encoder.output_size == 1024:
-                self.preceding_layer = nn.Identity()
+                if 'force_preceding_layer' in self.plm_cfg:
+                    self.preceding_layer = PrecedingLayer(
+                        in_features=1024,
+                        out_features=1024,  # mBart
+                        hidden_size=plm_cfg['force_preceding_layer'].get(
+                            'hidden_size', 1024),
+                        num_layers=plm_cfg['force_preceding_layer'].get('num_layers', 2))
+                else:
+                    self.preceding_layer = nn.Identity()
+            elif self.input_feature_after_sgnmbed:
+                print('input feature after sgnembed in_features=',
+                      self.sgn_embed.embedding_dim)
+                self.preceding_layer = PrecedingLayer(
+                    in_features=self.sgn_embed.embedding_dim,
+                    out_features=1024,  # mBart
+                    hidden_size=plm_cfg['preceding_layer'].get(
+                        'hidden_size', 1024),
+                    num_layers=plm_cfg['preceding_layer'].get('num_layers', 2))
             else:
                 self.preceding_layer = PrecedingLayer(
                     in_features=self.encoder.output_size,
@@ -538,6 +557,7 @@ class SignModel_PLM(nn.Module):
         output_attention: bool=False,
         batch=None
     ) -> (Tensor, Tensor, Tensor, Tensor):
+        other_outputs = {}
         encoder_outputs = self.encode(
             sgn=sgn, sgn_mask=sgn_mask, sgn_length=sgn_lengths, output_attention=output_attention
         )
@@ -582,7 +602,11 @@ class SignModel_PLM(nn.Module):
             )
         elif self.do_translation or self.do_distillation:
             #intermediate layer 512->1024
-            encoder_output = self.preceding_layer(encoder_output)  # B,T,D'
+            if self.input_feature_after_sgnmbed:
+                assert not self.do_distillation
+                encoder_output = self.preceding_layer(self.sgn_embed(x=sgn, mask=sgn_mask))
+            else:
+                encoder_output = self.preceding_layer(encoder_output)  # B,T,D'
             #note that after transmormation padded features are not zeros!
             #print('after transform ', encoder_output.shape)
 
@@ -646,10 +670,11 @@ class SignModel_PLM(nn.Module):
                 print(self.map_new2old(torch.argmax(output_dict['logits'], dim=-1)))#B,L,V
 
             translation_loss = batch_loss_sum/batch_size
+            other_outputs['translation_input'] = inputs['inputs_embeds']
         else:
             translation_loss = None
 
-        return translation_loss, gloss_probabilities, attention, encoder_output, distillation_loss
+        return translation_loss, gloss_probabilities, attention, encoder_output, distillation_loss, other_outputs
 
 
     def run_batch(
@@ -696,7 +721,7 @@ class SignModel_PLM(nn.Module):
                 batch_enc_op=encoder_output,
                 batch_gls_prob=gloss_probabilities_0,  # n,t,c
                 batch_mask=batch.sgn_mask,  # B,1,L
-                select_strategy=self.sample_strategy,
+                select_strategy=self.sample_strategy if self.sample_strategy!='top1_random' else 'top1_mean',
                 return_pred_gls=True)
 
         else:

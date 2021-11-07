@@ -66,6 +66,7 @@ def get_loss_for_batch(
 
     # Do a forward pass
     translation_loss, distillation_loss = None, None
+    other_outputs= {}
     model_name = model.__class__.__name__
     if model_name == 'DistributedDataParallel':
         model_name = model.module.__class__.__name__
@@ -83,7 +84,8 @@ def get_loss_for_batch(
             assert len(outputs) == 4, len(outputs)
             decoder_outputs, gloss_probabilities, attention, encoder_outputs = outputs
         elif model_name=='SignModel_PLM':
-            translation_loss, gloss_probabilities, attention, encoder_outputs, distillation_loss = outputs
+            translation_loss, gloss_probabilities, attention, encoder_outputs, distillation_loss, other_outputs = outputs
+            other_outputs['translation_input'] = other_outputs.get('translation_input',None)
         else:
             raise ValueError
 
@@ -174,7 +176,9 @@ def get_loss_for_batch(
         assert distillation_loss_weight in [0,None], distillation_loss_weight
         distillation_loss = None
 
-    return recognition_loss, translation_loss, distillation_loss, attention, encoder_outputs
+    other_outputs['attention'] = attention
+    other_outputs['encoder_outputs'] = encoder_outputs
+    return recognition_loss, translation_loss, distillation_loss, other_outputs
 
 
 class CNN(torch.nn.Module):
