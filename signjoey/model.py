@@ -940,13 +940,13 @@ def build_model(
                     stride=cfg['tokenizer'].get('block5_stride', 2))
             
             network = cfg["tokenizer"]["architecture"]
-            if cfg["tokenizer"].get('pretask','default')=='default':
-                pretask = pre_task[network]
-            elif cfg["tokenizer"].get('pretask', 'default') == 'scratch':
+            if cfg["tokenizer"].get('pretask', 'default') == 'scratch':
                 print('Train 3D backbone from scratch ...')
-                pass 
             else:
-                pretask = cfg["tokenizer"].get('pretask')
+                if cfg["tokenizer"].get('pretask','default')=='default':
+                    pretask = pre_task[network]
+                else:
+                    pretask = cfg["tokenizer"].get('pretask')
                 ckpt_filename = os.path.join(
                     cfg["tokenizer"]["pretrained_ckpt"], 
                     '%s_%s_ckpt' % (network, pretask))

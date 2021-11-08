@@ -114,10 +114,12 @@ def sparse_sample(batch_enc_op, batch_gls_prob, batch_mask,
     #batch_mask B,1,T
     #select_strategy format ['all','random_num_top1', 'top1/2_mean/max/random/all']
     if select_strategy == 'all':
+        outputs = (batch_enc_op, batch_mask)
         if return_pred_gls:
-            return batch_enc_op, batch_mask, None
-        else:
-            return batch_enc_op, batch_mask
+            outputs += (None,)
+        if return_empty_flag:
+            outputs += ([],)
+        return outputs
 
     batch_size = batch_enc_op.shape[0]
     empty_ids=[]

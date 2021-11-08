@@ -212,7 +212,10 @@ def validate_on_data(
         split_txt = []
         seq2ensemble_predictions = {}
         seq2ensemble_all_results = {}
-        for batch in tqdm(iter(valid_iter), disable=False):
+        tqdm_disable = True
+        if os.environ.get('TQDM',0)==1:
+            tqdm_disable = False
+        for batch in tqdm(iter(valid_iter), disable=tqdm_disable):
             split_gls.append(batch.gls)
             split_txt.append(batch.txt)
 
@@ -532,7 +535,7 @@ def validate_on_data(
 # pylint: disable-msg=logging-too-many-args
 def test(
     cfg_file, ckpt: str, output_path: str = None, logger: logging.Logger = None,
-    num: int=50, save_immediate_results=False
+    num: int=-1, save_immediate_results=False
 ) -> None:
     """
     Main test function. Handles loading a model from checkpoint, generating
@@ -689,7 +692,7 @@ def test(
     if do_recognition:
         assert model.module.gls_vocab.stoi[SIL_TOKEN] == 0
 
-    if 0:#do_recognition:
+    if do_recognition:
         # Dev Recognition CTC Beam Search Results
         dev_recognition_results = {}
         dev_best_wer_score = float("inf")
