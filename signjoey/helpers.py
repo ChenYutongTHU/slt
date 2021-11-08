@@ -67,14 +67,15 @@ def shift_tokens_right(input_ids: torch.Tensor, pad_token_id: int, ignore_index:
     return prev_output_tokens,input_ids
 
 
-def traverse(results, cur_res, sp, cur_id):
+def traverse(results, cur_res, cur_probs, sp, cur_id):
     if cur_id >= len(sp):
-        results.append(cur_res)
+        results.append([cur_res, cur_probs])
         return 
     else:
-        for sid in sp[cur_id]:
+        for sid, gls_prob in sp[cur_id]:
             cur_res_extend = cur_res +[sid]
-            traverse(results, cur_res_extend, sp, cur_id+1)
+            cur_probs_extend = cur_probs + [gls_prob]
+            traverse(results, cur_res_extend, cur_probs_extend, sp, cur_id+1)
 #traverse
 def get_all_combinations(gls_prob):
     t = gls_prob.shape[0]
@@ -82,7 +83,7 @@ def get_all_combinations(gls_prob):
     gls_pred = torch.argmax(gls_prob, axis=1) #T
     num = torch.sum(torch.argmax(gls_prob, axis=1) != 0)
     if not num:
-        return [[i for i in range(t)]]
+        return [[[i for i in range(t)],[1]*t]]
     spans = []
     i,j = 0,0
     while i<t:
@@ -94,18 +95,20 @@ def get_all_combinations(gls_prob):
         j = i
         cur_pred = sort_idx[i, 0]
         while j < t and sort_idx[j, 0] == cur_pred:
-            span_id.append(j)  # top1
+            span_id.append([j, gls_prob[j][cur_pred].item()])  # top1
             j += 1
         spans.append(span_id)
         i = j
     
     results = []
-    traverse(results, [], spans, 0)
+    traverse(results, [], [], spans, 0)
 
     return results
 
 
-def sparse_sample(batch_enc_op, batch_gls_prob, batch_mask, select_strategy='all', return_pred_gls=False):
+def sparse_sample(batch_enc_op, batch_gls_prob, batch_mask, 
+    select_strategy='all', return_pred_gls=False,
+    return_empty_flag=False):
     #enc_op B,T,D
     #gls_prob B,T,C
     #batch_mask B,1,T
@@ -117,6 +120,7 @@ def sparse_sample(batch_enc_op, batch_gls_prob, batch_mask, select_strategy='all
             return batch_enc_op, batch_mask
 
     batch_size = batch_enc_op.shape[0]
+    empty_ids=[]
     #assert batch_size == 1, 'currently only support batch_size=1!'
     batch_selected_op = []
     batch_selected_op_len = []
@@ -131,8 +135,6 @@ def sparse_sample(batch_enc_op, batch_gls_prob, batch_mask, select_strategy='all
         sort_idx = torch.argsort(gls_prob, dim=1, descending=True)  #T D -> T D
         gls_pred = torch.argmax(gls_prob, axis=1)
 
-        if 0:
-            print(gls_pred)
         num = torch.sum(torch.argmax(gls_prob, axis=1) != 0)
         if select_strategy == 'random_num_top1':
             selected_op_id = np.sort(np.random.permutation(t)[:num])
@@ -222,10 +224,12 @@ def sparse_sample(batch_enc_op, batch_gls_prob, batch_mask, select_strategy='all
         padded_ops.append(op)
     batch_selected_op = torch.stack(padded_ops, dim=0)  # B,T,D
     #I don't think we need to pad pred_gls
+    outputs = (batch_selected_op, new_mask)
     if return_pred_gls:
-        return batch_selected_op, new_mask, batch_selected_pred_gls #list of list
-    else:
-        return batch_selected_op, new_mask
+        outputs += (batch_selected_pred_gls,) #list of list
+    if return_empty_flag:
+        outputs += (empty_ids,)
+    return outputs
 
 
 

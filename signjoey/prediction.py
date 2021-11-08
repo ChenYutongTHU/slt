@@ -211,7 +211,8 @@ def validate_on_data(
         split_gls = []
         split_txt = []
         seq2ensemble_predictions = {}
-        for batch in tqdm(iter(valid_iter), disable=True):#os.environ['WORLD_SIZE']!='1'):
+        seq2ensemble_all_results = {}
+        for batch in tqdm(iter(valid_iter), disable=False):
             split_gls.append(batch.gls)
             split_txt.append(batch.txt)
 
@@ -275,12 +276,13 @@ def validate_on_data(
                 )
                 
                 if translation_ensemble_test:
-                    batch_txt_predictions = model.module.run_batch_ensemble_translation(
+                    batch_txt_predictions, all_hypos = model.module.run_batch_ensemble_translation(
                         batch=batch,
                         **translation_ensemble_test_cfg)
                     for bb, pred in enumerate(batch_txt_predictions):
                         seq = batch.sequence[bb]
                         seq2ensemble_predictions[seq] = pred
+                        seq2ensemble_all_results[seq] = all_hypos[bb]
 
 
             if do_recognition:
@@ -522,7 +524,8 @@ def validate_on_data(
             results[k]['valid_scores_gathered'] = sc
     torch.cuda.empty_cache()
     if translation_ensemble_test==True:
-        results['seq2ensemble_predictions'] =  translation_ensemble_test
+        results['seq2ensemble_predictions'] =  seq2ensemble_predictions
+        results['seq2ensemble_all_results'] = seq2ensemble_all_results
     return results
 
 
@@ -581,7 +584,7 @@ def test(
     print('Load  vocab file from ', vocab_dir)
     # load the data
     _, dev_data, test_data, gls_vocab, txt_vocab, _, _ = load_data(data_cfg=cfg["data"])
-    if save_immediate_results and num>0:
+    if num>0:
         set_seed(0)
         dev_data, _ = dev_data.split(split_ratio=num/len(dev_data))
 
@@ -686,7 +689,7 @@ def test(
     if do_recognition:
         assert model.module.gls_vocab.stoi[SIL_TOKEN] == 0
 
-    if do_recognition:
+    if 0:#do_recognition:
         # Dev Recognition CTC Beam Search Results
         dev_recognition_results = {}
         dev_best_wer_score = float("inf")
@@ -816,6 +819,11 @@ def test(
                         'translation_beam_alpha':ta
                     }
                 )
+
+                if 'translation_ensemble_test' in cfg["testing"]:
+                    assert 'seq2ensemble_all_results' in dev_translation_results[tbw][ta]
+                    with open(output_path+'.dev_'+str(tbw)+'_'+str(ta)+'ensemble.results.pkl','wb') as f:
+                        pickle.dump(dev_translation_results[tbw][ta]['seq2ensemble_all_results'], f)
                 if save_immediate_results:
                     save_immediate_results_fun(
                         data=dev_data,
@@ -948,7 +956,12 @@ def test(
         translation_ensemble_test='translation_ensemble_test' in cfg["testing"],
         translation_ensemble_test_cfg = cfg["testing"].get('translation_ensemble_test',{})
     )
-
+    if 'translation_ensemble_test' in cfg["testing"]:
+        assert 'seq2ensemble_all_results' in test_best_result
+        ta = dev_best_translation_alpha
+        tbw = dev_best_translation_beam_size
+        with open(output_path+'.test_'+str(tbw)+'_'+str(ta)+'ensemble.results.pkl','wb') as f:
+            pickle.dump(test_best_result['seq2ensemble_all_results'], f)
 
     logger.info(
         "[TEST] partition [Recognition & Translation] results:\n\t"

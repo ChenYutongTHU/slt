@@ -717,12 +717,14 @@ class SignModel_PLM(nn.Module):
             # print('run batch')
             # print('sample_strategy', self.sample_strategy)
             # input()
-            encoder_output, new_sgn_mask, batch_pred_gls = sparse_sample(
+            encoder_output, new_sgn_mask, batch_pred_gls, has_empty = sparse_sample(
                 batch_enc_op=encoder_output,
                 batch_gls_prob=gloss_probabilities_0,  # n,t,c
                 batch_mask=batch.sgn_mask,  # B,1,L
                 select_strategy=self.sample_strategy if self.sample_strategy!='top1_random' else 'top1_mean',
-                return_pred_gls=True)
+                return_pred_gls=True,
+                return_empty_flag=True)   
+
 
         else:
             new_sgn_mask = batch.sgn_mask
@@ -774,6 +776,8 @@ class SignModel_PLM(nn.Module):
                 if len(d)>2 and d[-1]=='.' and d[-2]!=' ':
                     d = d[:-1]+ ' .'
                     stacked_txt_output_decoded[di] = d
+     
+
             stacked_attention_scores = None
         else:
             stacked_txt_output_decoded = None
@@ -793,7 +797,9 @@ class SignModel_PLM(nn.Module):
         translation_beam_size: int=4,
         translation_beam_alpha: float=1,
         translation_max_output_length: int = 100,
+        **kwargs
     ):  
+        #print('ensemble!')
         assert num_return_sequences <= translation_beam_size
         assert not self.sample_strategy=='all'
         assert self.do_recognition and self.do_translation and not self.pipeline and not self.use_gt_gloss
@@ -809,6 +815,7 @@ class SignModel_PLM(nn.Module):
         ensemble_predictions_decoded = [[] for i in range(batch_size)]
         device = encoder_outputs0.device
         batch_predictions = []
+        batch_all_results = []
         for i in range(batch_size):
             #process one by one
 
@@ -824,7 +831,7 @@ class SignModel_PLM(nn.Module):
 
             # step2. prepare encoder_output_sample new_sgn_mask and generate
             sparse_samples = [{} for ii in range(ensemble_n)]
-            for ci, comb_ids in enumerate(all_combinations_ids):
+            for ci, (comb_ids, probs) in enumerate(all_combinations_ids):
                 # a list
                 encoder_output_sample = torch.stack(
                     [encoder_outputs0[i,id_,:] for id_ in comb_ids], dim=0).unsqueeze(0) #1,T,D
@@ -835,6 +842,7 @@ class SignModel_PLM(nn.Module):
                 if hasattr(self, 'preceding_layer'):
                     encoder_output_sample = self.preceding_layer(encoder_output_sample)
                 sparse_samples[ci] = {
+                    'span_probs': probs,
                     'encoder_output_sample':encoder_output_sample,
                     'new_sgn_mask': new_sgn_mask}
                 sparse_samples[ci]['encoder_inputs'] = self.prepare_plm_inputs(
@@ -849,7 +857,9 @@ class SignModel_PLM(nn.Module):
                     num_return_sequences=num_return_sequences,
                     length_penalty=translation_beam_alpha,
                     #return_dict_in_generate=True,
-                    output_attentions=False)  # some redundant computation is made here, I'll improve it later                  
+                    output_attentions=False)  
+                    # some redundant computation is made here, I'll improve it later     
+                    #              
                 if 1:
                     #print(num_return_sequences)
                     #print(sparse_samples[ci]['output_sequences'].shape)
@@ -873,6 +883,7 @@ class SignModel_PLM(nn.Module):
             #print('self.txt_bos_index', self.txt_bos_index)
             best_scores = None
             best_hyp = None
+            all_results = []
             for ci in range(ensemble_n):
                 sparse_samples[ci]['scores'] = []
                 for si in range(num_return_sequences):
@@ -913,19 +924,25 @@ class SignModel_PLM(nn.Module):
                         #score = self.translation_loss_fun(log_probs,targets=hyp_label).detach().cpu().item()
                         scores.append(score.item())
                         #print(ci,si, cii, score.item())
-                    scores = np.mean(scores)
-                    sparse_samples[ci]['scores'].append(scores)
+                    mean_scores = np.mean(scores)
+                    sparse_samples[ci]['scores'].append(mean_scores)
+                    all_results.append({
+                        'hyp': sparse_samples[ci]['stacked_txt_output_decoded'][si],
+                        'sample_ind': ci,
+                        'beam_rank': si,
+                        'scores': scores,
+                        'probs': [ss['span_probs'] for ss in sparse_samples],
+                        'mean_scores': mean_scores
+                    })
+                    # print(all_results[-1])
+                    # input()
                 #print(sparse_samples[ci]['scores'])
                 for sii, s in enumerate(sparse_samples[ci]['scores']):
                     if best_scores==None or s > best_scores:
                         best_scores = s
                         best_hyp = sparse_samples[ci]['stacked_txt_output_decoded'][sii]
-            
-            # print(best_scores)
-            # print(best_hyp)
-            # input()
+
             batch_predictions.append(best_hyp.replace('.',' .'))
-        #ensemle_predictions
-        #print(batch_predictions)
-        return batch_predictions
+            batch_all_results.append(all_results)
+        return batch_predictions, batch_all_results
 
