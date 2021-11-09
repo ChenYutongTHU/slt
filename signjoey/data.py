@@ -74,6 +74,9 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
         else:
             return text.split()
 
+    def tokenize_gloss(gloss):
+        return gloss.split()
+
     def tokenize_features(features):
         ft_list = torch.split(features, 1, dim=0)
         return [ft.squeeze() for ft in ft_list]
@@ -101,7 +104,7 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
     gls_field = data.Field(
         eos_token=EOS_TOKEN if data_cfg.get('input_data','feature')=='gloss' else None,
         pad_token=PAD_TOKEN,
-        tokenize=tokenize_text,
+        tokenize=tokenize_gloss,
         batch_first=True,
         lower=False,
         include_lengths=True,

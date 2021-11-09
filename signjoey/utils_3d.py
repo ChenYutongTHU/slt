@@ -42,7 +42,7 @@ class ChannelSwap:
 def get_data_transform(mode, dataset_info):
     ## preprocess data (PIL-image list) before batch binding
     if mode == 'train':
-        ops = [A.RandomSizedCrop(size=224, consistent=True, bottom_area=0.2),]
+        ops = [A.RandomSizedCrop(size=224, consistent=True, bottom_area=dataset_info['bottom_area']),]
         if dataset_info['aug_hflip']:
             ops.append(A.RandomHorizontalFlip())
         ops.append(A.Scale(dataset_info['img_size']))

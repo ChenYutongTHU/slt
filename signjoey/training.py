@@ -1395,6 +1395,7 @@ def train(cfg_file: str, preemptible: bool=False) -> None:
             cfg=cfg["model"],
             gls_vocab=gls_vocab,
             txt_vocab=txt_vocab,
+            txt_level=cfg['data'].get('level','word'),
             sgn_dim=sum(cfg["data"]["feature_size"])
             if isinstance(cfg["data"]["feature_size"], list)
             else cfg["data"]["feature_size"],
@@ -1407,6 +1408,7 @@ def train(cfg_file: str, preemptible: bool=False) -> None:
             cfg=cfg["model"],
             gls_vocab=gls_vocab,
             txt_vocab=txt_vocab,
+            txt_level=cfg['data'].get('level','word'),
             sgn_dim=sum(cfg["data"]["feature_size"])
             if isinstance(cfg["data"]["feature_size"], list)
             else cfg["data"]["feature_size"],

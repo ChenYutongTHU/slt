@@ -328,6 +328,8 @@ class Batch_from_examples(Batch):
             dataset_info['aug_hflip'] = False
             dataset_info['use_cache'] = False
             dataset_info['color_jitter'] = data_cfg.get('color_jitter',True)
+            dataset_info['dataset_name'] = data_cfg.get('dataset_name','phoenix')
+            dataset_info['bottom_area'] = data_cfg.get('bottom_area',0.2)
             self.transform = get_data_transform(
                 mode=transform_mode if is_train else 'test', 
                 dataset_info=dataset_info)
@@ -348,13 +350,14 @@ class Batch_from_examples(Batch):
                 seq_folder = os.path.join(img_path, name)
                 assert os.path.isdir(seq_folder), seq_folder
                 image_path_list = [os.path.join(seq_folder, ss) for ss in sorted(
-                    os.listdir(seq_folder)) if ss[-4:] == '.png']
+                    os.listdir(seq_folder)) if ss[-4:] in ['.png','.jpg']]
                 selected_indexs, valid_len = self.get_selected_indexs(
                     len(image_path_list), tmin=dat_min, tmax=dat_max,
                     level=data_cfg['temporal_augmentation'].get('level','sentence') if 'temporal_augmentation' in data_cfg else 'sentence',
                     num_tokens=num_tokens)
                 self.sgn_lengths.append(valid_len)  # l0,l1,l2,l3,l4
-                frame_seq = self.load_frames(image_path_list, selected_indexs)
+                frame_seq = self.load_frames(image_path_list, selected_indexs, 
+                    dataset_name=dataset_info['dataset_name'])
                 if self.transform is not None: frame_seq = self.transform(frame_seq) #c,t,h,w
                 unpadded_seq.append(frame_seq)
             #padding to maxmimum length   
@@ -479,10 +482,12 @@ class Batch_from_examples(Batch):
         assert len(frame_index) == valid_len, (frame_index, valid_len)
         return frame_index, valid_len
 
-    def load_frames(self, file_list, selected_indexs=None):
+    def load_frames(self, file_list, selected_indexs=None, dataset_name='phoenix'):
         def read_img(path):
             #rgb_im = np.array(Image.open(path).convert("RGB"), np.float32)
             rgb_im = Image.open(path).convert("RGB")
+            if dataset_name=='csl':
+                rgb_im = rgb_im.crop((0,80,512,512))
             return rgb_im
         if selected_indexs is None:
             selected_indexs = np.arange(len(file_list))

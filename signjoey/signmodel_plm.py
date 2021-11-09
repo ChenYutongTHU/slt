@@ -46,6 +46,7 @@ class SignModel_PLM(nn.Module):
         sgn_embed: nn.Module,
         gls_vocab: GlossVocabulary,
         txt_vocab: TextVocabulary,
+        txt_level: str='word',
         sample_strategy: str='all',
         do_recognition: bool=True,
         do_translation: bool=True,
@@ -57,6 +58,7 @@ class SignModel_PLM(nn.Module):
         self.do_distillation = do_distillation
         self.gls_vocab = gls_vocab
         self.txt_vocab = txt_vocab
+        self.txt_level = txt_level
         self.gls_pad_index = gls_vocab.stoi[PAD_TOKEN]
         self.txt_pad_index = txt_vocab.stoi[PAD_TOKEN]  # ???
         self.sgn_embed = sgn_embed
@@ -325,7 +327,13 @@ class SignModel_PLM(nn.Module):
         for i in range(batch_size):
             raw_txt = [self.txt_vocab.itos[txt[i,j]] for j in range(1,txt_lengths[i]) \
                 if self.txt_vocab.itos[txt[i,j]] != EOS_TOKEN] #the first one is [BOS] (prepended by torchtext field)
-            batch_raw_txt.append(' '.join(raw_txt))
+            #level!
+            if self.txt_level=='word':
+                batch_raw_txt.append(' '.join(raw_txt))
+            elif self.txt_level=='char':
+                batch_raw_txt.append(''.join(raw_txt))
+            else:
+                raise ValueError
         #print(batch_raw_txt)
         with self.tokenizer.as_target_tokenizer():
             labels = self.tokenizer(

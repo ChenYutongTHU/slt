@@ -239,6 +239,7 @@ class SignModel(nn.Module):
         txt_embed: Embeddings,
         gls_vocab: GlossVocabulary,
         txt_vocab: TextVocabulary,
+        txt_level: str='word',
         do_recognition: bool = True,
         do_translation: bool = True,
         sample_strategy: str='all',
@@ -270,6 +271,7 @@ class SignModel(nn.Module):
 
         self.gls_vocab = gls_vocab
         self.txt_vocab = txt_vocab
+        self.txt_level = txt_level
 
         self.txt_bos_index = self.txt_vocab.stoi[BOS_TOKEN]
         self.txt_pad_index = self.txt_vocab.stoi[PAD_TOKEN]
@@ -566,6 +568,7 @@ class Tokenizer_SignModel(nn.Module):
         self.gls_pad_index = self.signmodel.gls_pad_index
         self.gls_vocab = self.signmodel.gls_vocab
         self.txt_vocab = self.signmodel.txt_vocab
+        self.txt_level = self.signmodel.txt_level
         self.do_recognition = self.signmodel.do_recognition
         self.do_translation = self.signmodel.do_translation
         self.track_bn = track_bn
@@ -709,6 +712,7 @@ def build_model(
     sgn_dim: int,
     gls_vocab: GlossVocabulary,
     txt_vocab: TextVocabulary,
+    txt_level: str='word',
     do_recognition: bool = True,
     do_translation: bool = True,
     do_distillation: bool = False,
@@ -871,6 +875,7 @@ def build_model(
             txt_embed=txt_embed,
             gls_vocab=gls_vocab,
             txt_vocab=txt_vocab,
+            txt_level=txt_level,
             do_recognition=do_recognition,
             do_translation=do_translation,
         )
@@ -889,6 +894,7 @@ def build_model(
             plm_cfg=cfg['plm'],
             sgn_embed = sgn_embed,
             txt_vocab = txt_vocab,
+            txt_level = txt_level,
             gls_vocab = gls_vocab, #gls_vocab is needed to convert CTC prediction back to gls str
             do_recognition=do_recognition,
             do_translation=do_translation, 

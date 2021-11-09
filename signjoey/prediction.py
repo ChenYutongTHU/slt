@@ -342,6 +342,8 @@ def validate_on_data(
                 gls_cln_fn = clean_phoenix_2014_trans
             elif dataset_version == "phoenix_2014":
                 gls_cln_fn = clean_phoenix_2014
+            elif dataset_version == 'csl':
+                gls_cln_fn = lambda x:x
             else:
                 raise ValueError("Unknown Dataset Version: " + dataset_version)
 
