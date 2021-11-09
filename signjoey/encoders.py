@@ -37,9 +37,9 @@ class NullEncoder(Encoder):
     def forward(self, embed_src, src_length=None, mask=None,**kwargs):
         if self.pe:
             x = self.pe(embed_src)
-            return x, x
+            return x, x,None,{}
         else:
-            return embed_src, embed_src
+            return embed_src, embed_src, None,{}
 class CNNEncoderLayer(nn.Module):
     def __init__(self,
                  input_size, output_size, kernel_size=5, stride=1, padding=0,
@@ -358,26 +358,33 @@ class TransformerEncoder(Encoder):
             - hidden_concat: last hidden state with
                 shape (batch_size, directions*hidden)
         """
+        intermediate = {}
+        intermediate['sgn_embed'] = embed_src
         if self.pe:
             x = self.pe(embed_src)  # add position encoding to word embeddings
+            intermediate['pe'] = x
         else:
             x = embed_src
         x = self.emb_dropout(x)
         if output_attention:
             attentions = []
-        for layer in self.layers:
+        for li, layer in enumerate(self.layers):
             if output_attention:
                 x, attention = layer(x, mask, output_attention=True)
                 attentions.append(attention)
             else:
                 x = layer(x, mask)
+            intermediate['layer_'+str(li)] = x
 
         x = self.map2gloss_embed(x)
+        x = self.layer_norm(x)
+        intermediate['gloss_feature'] = x #B,T,D
         if output_attention:
             attentions = torch.stack(attentions, dim=1) #B, L, H, T,T
-            return self.layer_norm(x), None, attentions # None -> encoder hidden(unused)
         else:
-            return self.layer_norm(x), None
+            attentions = None
+
+        return x, None, attentions, intermediate # None -> encoder hidden(unused)
 
     def __repr__(self):
         return "%s(num_layers=%r, num_heads=%r)" % (

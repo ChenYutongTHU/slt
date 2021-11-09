@@ -85,7 +85,8 @@ def get_loss_for_batch(
             decoder_outputs, gloss_probabilities, attention, encoder_outputs = outputs
         elif model_name=='SignModel_PLM':
             translation_loss, gloss_probabilities, attention, encoder_outputs, distillation_loss, other_outputs = outputs
-            other_outputs['translation_input'] = other_outputs.get('translation_input',None)
+            #other_outputs['translation_input'] = other_outputs.get('translation_input',None)
+
         else:
             raise ValueError
 
@@ -176,8 +177,6 @@ def get_loss_for_batch(
         assert distillation_loss_weight in [0,None], distillation_loss_weight
         distillation_loss = None
 
-    other_outputs['attention'] = attention
-    other_outputs['encoder_outputs'] = encoder_outputs
     return recognition_loss, translation_loss, distillation_loss, other_outputs
 
 
@@ -311,10 +310,13 @@ class SignModel(nn.Module):
         :param txt_mask: target mask
         :return: decoder outputs
         """
+        other_outputs = {}
         encoder_outputs = self.encode(
             sgn=sgn, sgn_mask=sgn_mask, sgn_length=sgn_lengths, output_attention=output_attention
         )
-        if len(encoder_outputs) == 3:
+        if len(encoder_outputs) == 4:
+            encoder_output, encoder_hidden, attention, other_outputs = encoder_outputs 
+        elif len(encoder_outputs) == 3:
             encoder_output, encoder_hidden, attention = encoder_outputs
         else:
             encoder_output, encoder_hidden = encoder_outputs
@@ -440,7 +442,9 @@ class SignModel(nn.Module):
             encoder_outputs = self.encode(
                 sgn=batch.sgn, sgn_mask=batch.sgn_mask, sgn_length=batch.sgn_lengths
             )
-        if len(encoder_outputs) == 3:
+        if len(encoder_outputs) == 4:
+            encoder_output, encoder_hidden, attention, other_outputs = encoder_outputs
+        elif len(encoder_outputs) == 3:
             encoder_output, encoder_hidden, attention = encoder_outputs
         else:
             encoder_output, encoder_hidden = encoder_outputs

@@ -62,7 +62,8 @@ class SignModel_PLM(nn.Module):
         self.sgn_embed = sgn_embed
         self.encoder = encoder
         self.input_feature_after_sgnmbed = plm_cfg.get('input_feature_after_sgnmbed',False)
-        print('input feature after sgnembed to translation net')
+        if self.input_feature_after_sgnmbed:
+            print('input feature after sgnembed to translation net')
         self.gls_target_embedding_layer = None
         self.sample_strategy = sample_strategy
         print('sample_strategy= ', self.sample_strategy)
@@ -544,7 +545,7 @@ class SignModel_PLM(nn.Module):
             embed_src=self.sgn_embed(x=sgn, mask=sgn_mask),
             src_length=sgn_length,
             mask=sgn_mask,
-            output_attention=output_attention
+            output_attention=output_attention,
         )
 
     def forward(
@@ -558,20 +559,20 @@ class SignModel_PLM(nn.Module):
         batch=None
     ) -> (Tensor, Tensor, Tensor, Tensor):
         other_outputs = {}
-        encoder_outputs = self.encode(
-            sgn=sgn, sgn_mask=sgn_mask, sgn_length=sgn_lengths, output_attention=output_attention
+        assert output_attention==False
+        encoder_output, encoder_hidden, attention, intermediate = self.encode(
+            sgn=sgn, sgn_mask=sgn_mask, sgn_length=sgn_lengths, 
+            output_attention=output_attention
         )
-        if len(encoder_outputs) == 3:
-            encoder_output, encoder_hidden, attention = encoder_outputs
-        else:
-            encoder_output, encoder_hidden = encoder_outputs
-            attention=None
+        other_outputs = {**intermediate}
         if self.do_recognition:
             # Gloss Recognition Part
             # N x T x C
             gloss_scores = self.gloss_output_layer(encoder_output)
+            other_outputs['gloss_logits'] = gloss_scores
             # N x T x C
             gloss_probabilities = gloss_scores.log_softmax(2)
+            other_outputs['gloss_distribution'] = gloss_probabilities
             # Turn it into T x N x C
             gloss_probabilities = gloss_probabilities.permute(1, 0, 2)
             encoder_output, sgn_mask, batch_pred_gls = sparse_sample(
@@ -686,14 +687,9 @@ class SignModel_PLM(nn.Module):
         translation_max_output_length: int = 100,
         output_gloss_prob: bool = False
     ) -> (np.array, np.array, np.array):
-        encoder_outputs = self.encode(
+        encoder_output, encoder_hidden, attention, intermediate = self.encode(
             sgn=batch.sgn, sgn_mask=batch.sgn_mask, sgn_length=batch.sgn_lengths
         )
-        if len(encoder_outputs) == 3:
-            encoder_output, encoder_hidden, attention = encoder_outputs
-        else:
-            encoder_output, encoder_hidden = encoder_outputs
-            attention = None
 
         if self.do_recognition:
             gloss_scores = self.gloss_output_layer(encoder_output)
