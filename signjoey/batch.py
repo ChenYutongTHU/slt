@@ -9,6 +9,8 @@ import _init_paths
 from PIL import Image
 import torchvision
 from utils_3d import get_data_transform, pre_task
+from zipreader import ZipReader
+import io
 
 def scale_function(x):
     return x*255
@@ -69,6 +71,7 @@ class Batch:
         self.signer = torch_batch.signer
         # Sign
         self.sgn, self.sgn_lengths = torch_batch.sgn
+
 
         # Here be dragons
         if frame_subsampling_ratio:
@@ -240,7 +243,8 @@ class Batch_from_examples(Batch):
         self.max_num_frames = max_num_frames
         self.tokenizer_type = tokenizer_type
         self.downsample = downsample
-
+        # num_frames
+        self.num_frames = getattr(torch_batch, 'num_frames', None)
         self.input_data = input_data
         if input_data == 'feature':
             self.sgn, self.sgn_lengths = torch_batch.sgn
@@ -330,6 +334,15 @@ class Batch_from_examples(Batch):
             dataset_info['color_jitter'] = data_cfg.get('color_jitter',True)
             dataset_info['dataset_name'] = data_cfg.get('dataset_name','phoenix')
             dataset_info['bottom_area'] = data_cfg.get('bottom_area',0.2)
+
+            self.loader_type = data_cfg.get('loader_type','image') # image or zip
+            if self.loader_type=='zip':
+                self.cache_mode = data_cfg.get('cache_mode','wo')
+                assert self.cache_mode in ['part','full','wo']
+                assert not '.zip@' in img_path #img_path.zip@img_path/name/{:06d}.jpg
+                self.zip_name = os.path.basename(img_path)
+            else:
+                self.cache_mode = 'wo'
             self.transform = get_data_transform(
                 mode=transform_mode if is_train else 'test', 
                 dataset_info=dataset_info)
@@ -348,9 +361,17 @@ class Batch_from_examples(Batch):
             for idx, name in enumerate(self.sequence):
                 num_tokens = torch_batch.gls[0][idx].shape[0]
                 seq_folder = os.path.join(img_path, name)
-                assert os.path.isdir(seq_folder), seq_folder
-                image_path_list = [os.path.join(seq_folder, ss) for ss in sorted(
-                    os.listdir(seq_folder)) if ss[-4:] in ['.png','.jpg']]
+                if self.loader_type=='image':
+                    assert os.path.isdir(seq_folder), seq_folder
+                    image_path_list = [os.path.join(seq_folder, ss) for ss in sorted(
+                        os.listdir(seq_folder)) if ss[-4:] in ['.png','.jpg']]
+                elif self.loader_type=='zip':
+                    assert self.num_frames!=None
+                    image_path_list = ['{}.zip@{}/{}/{:06d}.jpg'.format(img_path, self.zip_name, name, fi) 
+                        for fi in range(self.num_frames[idx])]
+                else:
+                    raise ValueError
+
                 selected_indexs, valid_len = self.get_selected_indexs(
                     len(image_path_list), tmin=dat_min, tmax=dat_max,
                     level=data_cfg['temporal_augmentation'].get('level','sentence') if 'temporal_augmentation' in data_cfg else 'sentence',
@@ -482,16 +503,23 @@ class Batch_from_examples(Batch):
         assert len(frame_index) == valid_len, (frame_index, valid_len)
         return frame_index, valid_len
 
-    def load_frames(self, file_list, selected_indexs=None, dataset_name='phoenix'):
-        def read_img(path):
-            #rgb_im = np.array(Image.open(path).convert("RGB"), np.float32)
+    def read_img(self, path, dataset_name):
+        #rgb_im = np.array(Image.open(path).convert("RGB"), np.float32)
+        if self.loader_type=='image':
             rgb_im = Image.open(path).convert("RGB")
-            if dataset_name=='csl':
-                rgb_im = rgb_im.crop((0,80,512,512))
-            return rgb_im
+        elif self.loader_type=='zip':
+            zip_data = ZipReader.read(path)
+            rgb_im = Image.open(io.BytesIO(zip_data)).convert('RGB')
+        else:
+            raise ValueError
+        if dataset_name=='csl':
+            rgb_im = rgb_im.crop((0,80,512,512))
+        return rgb_im
+
+    def load_frames(self, file_list, selected_indexs=None, dataset_name='phoenix'):
         if selected_indexs is None:
             selected_indexs = np.arange(len(file_list))
-        rgb_imgs = [read_img(file_list[i]) for i in selected_indexs]
+        rgb_imgs = [self.read_img(file_list[i],dataset_name) for i in selected_indexs]
         return rgb_imgs
 
     def padding2maxlength(self, x, pad_method='zero'):
