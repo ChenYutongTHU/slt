@@ -88,13 +88,30 @@ class FiveCrop:
 
 
 class RandomSizedCrop:
-    def __init__(self, size, interpolation=Image.BICUBIC, consistent=True, p=1.0, seq_len=0, bottom_area=0.2):
+    def __init__(self, size, 
+        interpolation=Image.BICUBIC, 
+        consistent=True, 
+        p=1.0, 
+        seq_len=0, 
+        bottom_area=0.2,
+        aspect_ratio_min=3./4, aspect_ratio_max=4./3,
+        center_crop=True, center_crop_size=224):
         self.size = size
         self.interpolation = interpolation
         self.consistent = consistent
         self.threshold = p 
         self.seq_len = seq_len
         self.bottom_area = bottom_area
+        self.aspect_ratio_min = aspect_ratio_min
+        self.aspect_ratio_max = aspect_ratio_max
+        self.center_crop=center_crop
+        self.center_crop_size=center_crop_size
+
+        # print('threshold', self.threshold)
+        # print('bottom_area', self.bottom_area)
+        # print('aspect_ratio', self.aspect_ratio_min, self.aspect_ratio_max)
+        # print('center crop', self.center_crop)
+        # print('center crop', self.center_crop_size)
 
     def __call__(self, imgmap):
         img1 = imgmap[0]
@@ -102,7 +119,7 @@ class RandomSizedCrop:
             for attempt in range(10):
                 area = img1.size[0] * img1.size[1]
                 target_area = random.uniform(self.bottom_area, 1) * area
-                aspect_ratio = random.uniform(3. / 4, 4. / 3)
+                aspect_ratio = random.uniform(self.aspect_ratio_min, self.aspect_ratio_max)
 
                 w = int(round(math.sqrt(target_area * aspect_ratio)))
                 h = int(round(math.sqrt(target_area / aspect_ratio)))
@@ -142,8 +159,11 @@ class RandomSizedCrop:
             crop = CenterCrop(self.size)
             return crop(scale(imgmap))
         else: #don't do RandomSizedCrop, do CenterCrop
-            crop = CenterCrop(self.size)
-            return crop(imgmap)
+            if self.center_crop:
+                crop = CenterCrop(self.center_crop_size)
+                return crop(imgmap)
+            else:
+                return imgmap
 
 
 class RandomHorizontalFlip:

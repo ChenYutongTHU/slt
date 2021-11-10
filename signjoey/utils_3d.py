@@ -15,6 +15,7 @@ import torch.distributed as dist
 import torchvision.utils as vutils
 import torch.nn.functional as F
 import sys
+from signjoey.models_3d.CoCLR.utils.transforms import center_crop
 import utils.augmentation as A
 import utils.transforms as T
 from utils.utils import neq_load_customized
@@ -42,14 +43,25 @@ class ChannelSwap:
 def get_data_transform(mode, dataset_info):
     ## preprocess data (PIL-image list) before batch binding
     if mode == 'train':
-        ops = [A.RandomSizedCrop(size=224, consistent=True, bottom_area=dataset_info['bottom_area']),]
+        ops = [A.RandomSizedCrop(size=224, 
+            consistent=True, 
+            bottom_area=dataset_info.get('bottom_area',0.2),
+            aspect_ratio_min=dataset_info.get('aspect_ratio_min',3./4),
+            aspect_ratio_max=dataset_info.get('aspect_ratio_max',4./3),
+            p=dataset_info.get('randomcrop_threshold',1),
+            center_crop_size=dataset_info.get('center_crop_size',224),
+            center_crop=dataset_info.get('center_crop',True))]
         if dataset_info['aug_hflip']:
             ops.append(A.RandomHorizontalFlip())
         ops.append(A.Scale(dataset_info['img_size']))
         if dataset_info['color_jitter']:
             ops.append(A.ColorJitter(0.4, 0.4, 0.4, 0.1, p=0.3, consistent=True))
     elif mode == 'val' or mode == 'test':
-        ops = [A.CenterCrop(size=224, consistent=True), A.Scale(dataset_info['img_size']),]
+        ops = []
+        if dataset_info.get('center_crop',True)==True:
+            center_crop_size = dataset_info.get('center_crop_size', 224)
+            ops.append(A.CenterCrop(size=center_crop_size, consistent=True))
+        ops.append(A.Scale(dataset_info['img_size']))
     else:
         raise NotImplementedError
 

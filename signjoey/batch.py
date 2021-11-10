@@ -334,6 +334,14 @@ class Batch_from_examples(Batch):
             dataset_info['color_jitter'] = data_cfg.get('color_jitter',True)
             dataset_info['dataset_name'] = data_cfg.get('dataset_name','phoenix')
             dataset_info['bottom_area'] = data_cfg.get('bottom_area',0.2)
+            dataset_info['center_crop_size'] = data_cfg.get('center_crop_size',224)
+            dataset_info['center_crop'] = data_cfg.get('center_crop',True)
+            dataset_info['randomcrop_threshold'] = data_cfg.get('randomcrop_threshold',1)
+            dataset_info['aspect_ratio_min'] = data_cfg.get('aspect_ratio_min',3.0/4)
+            dataset_info['aspect_ratio_max'] = data_cfg.get('aspect_ratio_max',4.0/3)
+            if dataset_info['dataset_name']=='csl':
+                if dataset_info['center_crop_size']==224:
+                    dataset_info['center_crop_size'] = 430 
 
             self.loader_type = data_cfg.get('loader_type','image') # image or zip
             if self.loader_type=='zip':
