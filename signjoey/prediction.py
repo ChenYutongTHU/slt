@@ -173,12 +173,13 @@ def validate_on_data(
             split=split,
             use_cuda=use_cuda,
             frame_subsampling_ratio=frame_subsampling_ratio,
-            data_cfg=cfg['data']
+            data_cfg=cfg['data'],
         ),
         batch_size=batch_size,
         batch_type=batch_type,
         shuffle=False,
         distributed=True, #currently only support distributed!
+        num_workers=cfg['data'].get('num_workers', 1)
     )
 
     # disable dropout

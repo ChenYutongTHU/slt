@@ -407,6 +407,11 @@ def load_config(path="configs/default.yaml") -> dict:
     from model_3d import BLOCK2SIZE
     from resnet import LAYER2SIZE
     if cfg['data'].get('input_data','feature') == 'image':
+
+        if 'sentence_frames-512x512' in cfg['data']['img_path']:
+            assert cfg['data']['dataset_name']=='csl', (cfg['data']['dataset_name'], 'we need to crop for 512x512')
+        elif 'sentence_frames-' in cfg['data']['img_path']:
+            assert cfg['data']['dataset_name']!='csl', ('we cannot crop images for ',cfg['data']['dataset_name'])
         if cfg['model']['tokenizer']['architecture'] == 'cnn':
             use_layer = cfg['model']['cnn'].get('use_layer', 4)
             if cfg['data'].get('feature_size', 0) != LAYER2SIZE[use_layer]:

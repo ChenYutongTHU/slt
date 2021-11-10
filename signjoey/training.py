@@ -554,6 +554,7 @@ class TrainManager:
             batch_type=self.batch_type,
             distributed=distributed,
             shuffle=self.shuffle,
+            num_workers=self.cfg['data'].get('num_workers', 1)
         )
 
         epoch_no = None
@@ -603,8 +604,6 @@ class TrainManager:
                 # print(batch.sgn_mask)
                 # print(batch.sgn_lengths)
                 # print(torch.sum(batch.sgn_lengths))
-                # print(batch.sgn_img.shape)
-                # input()
                 batch._make_cuda()
                 # only update every batch_multiplier batches
                 # see https://medium.com/@davidlmorton/

@@ -285,7 +285,7 @@ def make_data_iter(
     batch_type,#: str = "sentence",
     distributed,#: bool = False,
     shuffle=False,#: bool = False,
-    num_workers=1,#: int = 2
+    num_workers=6,#: int = 6
 ) -> Tuple[torch.utils.data.DataLoader, torch.utils.data.Sampler]:
     """
     Returns a torch.utils.data.DataLoader iterator for a torchtext dataset.
