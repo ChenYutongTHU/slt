@@ -1364,9 +1364,12 @@ def train(cfg_file: str, preemptible: bool=False) -> None:
     #load vocab
     if os.path.isfile(cfg["training"].get("load_model","")):
         root_dir = os.path.dirname(cfg["training"]["load_model"])
-        cfg['data']['gls_vocab'] = os.path.join(os.path.join(root_dir, 'gls.vocab'))
-        cfg['data']['txt_vocab'] = os.path.join(os.path.join(root_dir, 'txt.vocab'))
-        print('Load  vocab file from ', root_dir)
+        if cfg["training"].get('reset_vocab',False)==False:
+            cfg['data']['gls_vocab'] = os.path.join(os.path.join(root_dir, 'gls.vocab'))
+            cfg['data']['txt_vocab'] = os.path.join(os.path.join(root_dir, 'txt.vocab'))
+            print('Load  vocab file from ', root_dir)
+        else:
+            print('Reset vocab!')
     input_data = cfg["data"].get('input_data', 'feature')
     # set the random seed
     set_seed(seed=cfg["training"].get("random_seed", 42))
