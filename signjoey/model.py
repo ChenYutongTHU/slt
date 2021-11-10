@@ -99,6 +99,9 @@ def get_loss_for_batch(
             txt_mask=batch.txt_mask,
             output_attention=output_attention
         )
+        other_outputs['encoder_outputs'] = encoder_outputs
+        other_outputs['sgn_feature'] = batch.sgn
+        
     elif input_data=='gloss':
         if model_name == 'SignModel':
             decoder_outputs, _, attention, encoder_outputs = model(
@@ -572,7 +575,6 @@ class Tokenizer_SignModel(nn.Module):
         self.do_recognition = self.signmodel.do_recognition
         self.do_translation = self.signmodel.do_translation
         self.track_bn = track_bn
-        assert self.track_bn, 'No longer support track_bn=False now'
         self.bn_train_mode = bn_train_mode
         
         def set_track_running_stats(m):
@@ -588,7 +590,8 @@ class Tokenizer_SignModel(nn.Module):
 
         if self.track_bn==False:
             print('Set batchnorm in Toeknizer track_running_stats to False')
-            self.tokenizer.apply(set_track_running_stats)
+            print('Warning track_bn=False! Use estimated batch statistics during inference and training')
+            self.tokenizer.apply(set_track_running_stats)  # debug please reset here
 
     def set_bn_eval(self, verbose=False):
         def _set_bn_eval_(m):
@@ -602,6 +605,18 @@ class Tokenizer_SignModel(nn.Module):
         elif verbose:
             print('Set batchnorm in tokenizer to Train mode')
 
+    def set_bn_train(self, verbose=False):
+        def _set_bn_train_(m):
+            classname = m.__class__.__name__
+            if classname.find('BatchNorm') != -1:
+                m.train()
+        if self.bn_train_mode=='train':
+            if verbose:
+                print('Set batchnorm in tokenizer  to train mode')
+            self.tokenizer.apply(_set_bn_train_)
+        elif verbose:
+            print('Set batchnorm in tokenizer to Train mode')
+
     def set_train(self, verbose=False):
         self.tokenizer.set_train()
         self.signmodel.train()
@@ -609,6 +624,9 @@ class Tokenizer_SignModel(nn.Module):
 
     def set_eval(self):
         self.eval()
+
+        if self.track_bn==False:
+            self.set_bn_train(verbose=True)
 
     def visual_tokenize(
         self,
