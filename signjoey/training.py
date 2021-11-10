@@ -1359,7 +1359,8 @@ def train(cfg_file: str, preemptible: bool=False) -> None:
         cfg["training"]["preemptible"] = True
     else:
         cfg["training"]["preemptible"] = False
-        cfg["training"]["resume_training"] = False
+        if cfg['training'].get('resume_training',False)==False:
+            cfg["training"]["resume_training"] = False
 
     #load vocab
     if os.path.isfile(cfg["training"].get("load_model","")):

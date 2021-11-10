@@ -342,8 +342,9 @@ class Batch_from_examples(Batch):
             if dataset_info['dataset_name']=='csl':
                 if dataset_info['center_crop_size']==224:
                     dataset_info['center_crop_size'] = 430 
-
-            self.loader_type = data_cfg.get('loader_type','image') # image or zip
+                self.loader_type = data_cfg.get('loader_type','zip')
+            else:
+                self.loader_type = data_cfg.get('loader_type','image') # image or zip
             if self.loader_type=='zip':
                 self.cache_mode = data_cfg.get('cache_mode','wo')
                 assert self.cache_mode in ['part','full','wo']
