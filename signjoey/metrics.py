@@ -25,7 +25,7 @@ def chrf(references, hypotheses):
     )
 
 
-def bleu(references, hypotheses):
+def bleu(references, hypotheses, level='word'):
     """
     Raw corpus BLEU from sacrebleu (without tokenization)
 
@@ -33,6 +33,10 @@ def bleu(references, hypotheses):
     :param references: list of references (strings)
     :return:
     """
+    if level=='char':
+        #split word
+        references = [' '.join(list(r)) for r in references]
+        hypotheses = [' '.join(list(r)) for r in hypotheses]
     bleu_scores = sacrebleu.raw_corpus_bleu(
         sys_stream=hypotheses, ref_streams=[references]
     ).scores
@@ -81,10 +85,14 @@ def sequence_accuracy(references, hypotheses):
     return (correct_sequences / len(hypotheses)) * 100 if hypotheses else 0.0
 
 
-def rouge(references, hypotheses):
+def rouge(references, hypotheses, level='word'):
     rouge_score = 0
     n_seq = len(hypotheses)
-
+    if level=='char':
+        #split word
+        references = [' '.join(list(r)) for r in references]
+        hypotheses = [' '.join(list(r)) for r in hypotheses]
+        
     for h, r in zip(hypotheses, references):
         rouge_score += mscoco_rouge.calc_score(hypotheses=[h], references=[r]) / n_seq
 

@@ -414,9 +414,9 @@ def validate_on_data(
         # TXT Metrics
         #print('ref ', txt_ref)
         #print('hyp ', txt_hyp)
-        txt_bleu = bleu(references=txt_ref, hypotheses=txt_hyp)
+        txt_bleu = bleu(references=txt_ref, hypotheses=txt_hyp, level=level)
         txt_chrf = chrf(references=txt_ref, hypotheses=txt_hyp)
-        txt_rouge = rouge(references=txt_ref, hypotheses=txt_hyp)
+        txt_rouge = rouge(references=txt_ref, hypotheses=txt_hyp, level=level)
 
         valid_scores["bleu"] = torch.tensor(txt_bleu["bleu4"], device='cuda')
         valid_scores["bleu_scores"] = {k: torch.tensor(
@@ -607,6 +607,7 @@ def test(
             cfg=cfg["model"],
             gls_vocab=gls_vocab,
             txt_vocab=txt_vocab,
+            txt_level=level,
             sgn_dim=sum(cfg["data"]["feature_size"])
             if isinstance(cfg["data"]["feature_size"], list)
             else cfg["data"]["feature_size"],
@@ -623,6 +624,7 @@ def test(
             cfg=cfg["model"],
             gls_vocab=gls_vocab,
             txt_vocab=txt_vocab,
+            txt_level=level,
             sgn_dim=sum(cfg["data"]["feature_size"])
             if isinstance(cfg["data"]["feature_size"], list)
             else cfg["data"]["feature_size"],
@@ -720,7 +722,7 @@ def test(
             translation_loss_function=None,
             translation_loss_weight=None,
             translation_max_output_length=None,
-            level=None,
+            level=cfg['data']['level'],
             translation_beam_size= None,
             translation_beam_alpha= None,
             frame_subsampling_ratio=frame_subsampling_ratio,

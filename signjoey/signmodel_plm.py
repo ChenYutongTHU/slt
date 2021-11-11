@@ -70,6 +70,9 @@ class SignModel_PLM(nn.Module):
         self.sample_strategy = sample_strategy
         print('sample_strategy= ', self.sample_strategy)
         self.plm_cfg = plm_cfg
+        self.src_lang = plm_cfg.get('src_lang','de_DGS')
+        self.tgt_lang = plm_cfg.get('tgt_lang','de_DE')
+
         self.plm_type = plm_cfg.get('type','mbart').lower()
         self.pipeline = plm_cfg.get('pipeline',False)
         self.freeze_ctc = plm_cfg.get('freeze_ctc', False)
@@ -141,10 +144,18 @@ class SignModel_PLM(nn.Module):
             else:
                 plm_cfg['overwrite_mbart_cfg'] = {}
             #tokenizer is still needed to encode/decode txt
+            #manually set src_lang_code (newly added) 
             self.tokenizer = MBartTokenizer.from_pretrained(
-                plm_cfg['pretrained_dir'], tgt_lang='de_DE')
-            self.tokenizer.lang_code_to_id['de_DGS'] = 30
-            self.tokenizer.src_lang = plm_cfg.get('src_lang', 'de_DGS')
+                plm_cfg['pretrained_dir'], tgt_lang=self.tgt_lang)
+            if self.src_lang == 'de_DGS':
+                assert 'de' in plm_cfg['pretrained_dir'].lower(), plm_cfg['pretrained_dir']
+                self.tokenizer.lang_code_to_id['de_DGS'] = 30
+            elif self.src_lang == 'zh_CSL':
+                assert 'zh' in plm_cfg['pretrained_dir'].lower(), plm_cfg['pretrained_dir']
+                self.tokenizer.lang_code_to_id['zh_CSL'] = -2   
+            else:
+                print('Warning! src_lang={}'.format(self.src_lang))            
+            self.tokenizer.src_lang = self.src_lang
 
 
         if do_recognition:
@@ -205,8 +216,8 @@ class SignModel_PLM(nn.Module):
                 print('Before re-initialize')
                 print(self.tokenizer.src_lang)
                 print(self.plm_model.model.shared.weight[src_lang_id_in_model, :])
-                print('=de_DE?')
-                tgt_lang_id_in_model = self.old2new[self.tokenizer.lang_code_to_id['de_DE']]
+                print('=corresponding ?tgt_lang ',self.tgt_lang)
+                tgt_lang_id_in_model = self.old2new[self.tokenizer.lang_code_to_id[self.tgt_lang]]
                 print(self.plm_model.model.shared.weight[tgt_lang_id_in_model, :])
                 torch.nn.init.normal_(self.plm_model.model.shared.weight[src_lang_id_in_model,:])
                 print('after re-initialize')
@@ -219,10 +230,6 @@ class SignModel_PLM(nn.Module):
             if plm_cfg.get('freeze_embed',False):
                 print('freeze plm embedding!')
                 freeze_params(self.plm_model.model.shared)
-            
-        if 0:
-            print('We set self.gls_lang_index to 30 (only for debug) please reset this line afterwards')
-            self.gls_lang_index = 30
             
 
         if do_distillation:
@@ -304,7 +311,12 @@ class SignModel_PLM(nn.Module):
         new_batch_input_ids = batch_input_ids.clone()
         for bi, input_ids in enumerate(batch_input_ids):
             for ii, id_ in enumerate(input_ids):
-                new_batch_input_ids[bi, ii] = self.old2new[id_.item()]
+                if not id_.item() in self.old2new:
+                    print(id_)
+                    print(new_batch_input_ids)
+                    new_batch_input_ids[bi, ii] = 3 # unk
+                else:
+                    new_batch_input_ids[bi, ii] = self.old2new[id_.item()]
         return new_batch_input_ids
 
     def map_new2old(self, batch_input_ids):
@@ -334,7 +346,7 @@ class SignModel_PLM(nn.Module):
                 batch_raw_txt.append(''.join(raw_txt))
             else:
                 raise ValueError
-        #print(batch_raw_txt)
+        #print(batch_raw_txt) #debughere!
         with self.tokenizer.as_target_tokenizer():
             labels = self.tokenizer(
                 batch_raw_txt,            
@@ -342,6 +354,7 @@ class SignModel_PLM(nn.Module):
                 return_attention_mask=True,
                 return_length=True,
                 return_tensors="pt")
+        #print(labels['input_ids'])
         labels['input_ids'] = self.map_old2new(labels['input_ids'])
         decoder_input_ids, label_input_ids = shift_tokens_right(
             labels['input_ids'].clone(), 
@@ -353,8 +366,8 @@ class SignModel_PLM(nn.Module):
     def prepare_plm_inputs(self,input_embed, input_mask, txt_input=None, txt_mask=None,
             fusion=False, batch_pred_ids=None):
         #here we need to append </s> <src_lang_code>  to input_embed
-        # print('eos_index', self.gls_eos_index)
-        # print('gls_lang_index', self.gls_lang_index)
+        #print('eos_index', self.gls_eos_index) #debughere!
+        #print('gls_lang_index', self.gls_lang_index) #debughere!
         eos_embedding = self.plm_model.model.shared.weight[self.gls_eos_index,:]
         src_lang_code_embedding = self.plm_model.model.shared.weight[self.gls_lang_index,:]
         suffix_emb = torch.stack([eos_embedding, src_lang_code_embedding], dim=0) # 2,1024
@@ -461,8 +474,8 @@ class SignModel_PLM(nn.Module):
                 'decoder_attention_mask': txt_mask_transformer,
                 'labels': txt_label
             }
-            # print('decoder inputs')
-            # print(decoder_inputs)
+            #print('decoder inputs')
+            #print(decoder_inputs) #debughere!
         else:
             batch_start_ids = torch.ones([batch_size,1],dtype=torch.long, device=input_embed.device)*self.txt_bos_index
             decoder_inputs = {'decoder_input_ids':batch_start_ids} #for inference
@@ -500,20 +513,16 @@ class SignModel_PLM(nn.Module):
                 dtype=torch.long)
             #B,L
             for bi in range(batch_size):
-                #print('sample ', bi)
+                ##print('sample ', bi) #debughere
                 for ii, gid in enumerate(tgt_ids[bi]):
-                    #print(self.gls_vocab.itos[gid], end=' ')
+                    #print(self.gls_vocab.itos[gid], end=' ')#debughere
                     padded_tgt_ids[bi,ii] = gid
                 new_mask[bi,:len(tgt_ids[bi])] = 1
-                #print()
+                ##print()
             batch_target_embeddings = self.gls_target_embedding_layer(padded_tgt_ids)
-            if 0:
-                print('padded_tgt_ids')
-                print(padded_tgt_ids)
-                print(batch_target_embeddings)
-                input()
 
-        #print(new_mask)
+
+        #print(new_mask) #debughere!
         if return_mask:
             return batch_target_embeddings, new_mask.unsqueeze(1)
         else:
@@ -568,31 +577,45 @@ class SignModel_PLM(nn.Module):
     ) -> (Tensor, Tensor, Tensor, Tensor):
         other_outputs = {}
         assert output_attention==False
-        encoder_output, encoder_hidden, attention, intermediate = self.encode(
-            sgn=sgn, sgn_mask=sgn_mask, sgn_length=sgn_lengths, 
-            output_attention=output_attention
-        )
-        other_outputs = {**intermediate}
-        if self.do_recognition:
-            # Gloss Recognition Part
-            # N x T x C
-            gloss_scores = self.gloss_output_layer(encoder_output)
-            other_outputs['gloss_logits'] = gloss_scores
-            # N x T x C
-            gloss_probabilities = gloss_scores.log_softmax(2)
-            other_outputs['gloss_distribution'] = gloss_probabilities
-            # Turn it into T x N x C
-            gloss_probabilities = gloss_probabilities.permute(1, 0, 2)
-            encoder_output, sgn_mask, batch_pred_gls = sparse_sample(
-                batch_enc_op=encoder_output, 
-                batch_gls_prob=gloss_probabilities.permute(1,0,2).detach(), # n,t,c
-                batch_mask = sgn_mask,  #B,1,L
-                select_strategy=self.sample_strategy,
-                return_pred_gls=True)
+        if not self.use_gt_gloss:
+            encoder_output, encoder_hidden, attention, intermediate = self.encode(
+                sgn=sgn, sgn_mask=sgn_mask, sgn_length=sgn_lengths, 
+                output_attention=output_attention
+            )
+            other_outputs = {**intermediate}
+            if self.do_recognition:
+                # Gloss Recognition Part
+                # N x T x C
+                gloss_scores = self.gloss_output_layer(encoder_output)
+                other_outputs['gloss_logits'] = gloss_scores
+                # N x T x C
+                gloss_probabilities = gloss_scores.log_softmax(2)
+                other_outputs['gloss_distribution'] = gloss_probabilities
+                # Turn it into T x N x C
+                gloss_probabilities = gloss_probabilities.permute(1, 0, 2)
+                encoder_output, sgn_mask, batch_pred_gls = sparse_sample(
+                    batch_enc_op=encoder_output, 
+                    batch_gls_prob=gloss_probabilities.permute(1,0,2).detach(), # n,t,c
+                    batch_mask = sgn_mask,  #B,1,L
+                    select_strategy=self.sample_strategy,
+                    return_pred_gls=True)
 
+            else:
+                gloss_probabilities = None
         else:
-            gloss_probabilities = None
-
+            assert batch!=None
+            batch_size = batch.gls_lengths.shape[0]
+            max_len = torch.max(batch.gls_lengths)
+            #print(batch.sequence)
+            encoder_output, sgn_mask = self.build_gloss_target_embedding(
+                src_embeddings=torch.zeros([batch_size, max_len, 1024], 
+                    dtype=batch.sgn.dtype, 
+                    device=batch.sgn.device),
+                tgt_ids=self.convert_gls_from_tensor_to_list(batch.gls, batch.gls_lengths),  #ground_truth gls
+                return_mask=True
+            )
+            gloss_probabilities, attention = None, None
+            
         if self.pipeline:
             #directly use gloss embedding (S->G->T) replace predicted encoder_output with gloss embedding
             batch_size, max_len, _ = encoder_output.shape
@@ -600,16 +623,7 @@ class SignModel_PLM(nn.Module):
                 src_embeddings=torch.zeros([batch_size, max_len, 1024], dtype=encoder_output.dtype, device=encoder_output.device),
                 tgt_ids=batch_pred_gls
             )
-        elif self.use_gt_gloss:
-            assert batch!=None
-            batch_size = batch.gls_lengths.shape[0]
-            max_len = torch.max(batch.gls_lengths)
-            encoder_output, sgn_mask = self.build_gloss_target_embedding(
-                src_embeddings=torch.zeros([batch_size, max_len, 1024], dtype=encoder_output.dtype, device=encoder_output.device),
-                tgt_ids=self.convert_gls_from_tensor_to_list(batch.gls, batch.gls_lengths),  #ground_truth gls
-                return_mask=True
-            )
-        elif self.do_translation or self.do_distillation:
+        elif (self.do_translation or self.do_distillation) and not self.use_gt_gloss:
             #intermediate layer 512->1024
             if self.input_feature_after_sgnmbed:
                 assert not self.do_distillation
@@ -695,44 +709,56 @@ class SignModel_PLM(nn.Module):
         translation_max_output_length: int = 100,
         output_gloss_prob: bool = False
     ) -> (np.array, np.array, np.array):
-        encoder_output, encoder_hidden, attention, intermediate = self.encode(
-            sgn=batch.sgn, sgn_mask=batch.sgn_mask, sgn_length=batch.sgn_lengths
-        )
-
-        if self.do_recognition:
-            gloss_scores = self.gloss_output_layer(encoder_output)
-            gloss_probabilities_0 = gloss_scores.log_softmax(2)
-            gloss_probabilities = gloss_probabilities_0.permute(1, 0, 2)
-            gloss_probabilities = gloss_probabilities.cpu().detach().numpy()
-            tf_gloss_probabilities = np.concatenate(
-                (gloss_probabilities[:, :, 1:],
-                 gloss_probabilities[:, :, 0, None]),
-                axis=-1,
+        if not self.use_gt_gloss:
+            encoder_output, encoder_hidden, attention, intermediate = self.encode(
+                sgn=batch.sgn, sgn_mask=batch.sgn_mask, sgn_length=batch.sgn_lengths
             )
-            if type(recognition_beam_size) != list:
-                decoded_gloss_sequences = ctc_decode_func(
-                    tf_gloss_probabilities, batch, recognition_beam_size, gloss_scores)
+
+            if self.do_recognition:
+                gloss_scores = self.gloss_output_layer(encoder_output)
+                gloss_probabilities_0 = gloss_scores.log_softmax(2)
+                gloss_probabilities = gloss_probabilities_0.permute(1, 0, 2)
+                gloss_probabilities = gloss_probabilities.cpu().detach().numpy()
+                tf_gloss_probabilities = np.concatenate(
+                    (gloss_probabilities[:, :, 1:],
+                    gloss_probabilities[:, :, 0, None]),
+                    axis=-1,
+                )
+                if type(recognition_beam_size) != list:
+                    decoded_gloss_sequences = ctc_decode_func(
+                        tf_gloss_probabilities, batch, recognition_beam_size, gloss_scores)
+                else:
+                    decoded_gloss_sequences = {}
+                    for rbs in recognition_beam_size:
+                        decoded_gloss_sequences[rbs] = ctc_decode_func(
+                            tf_gloss_probabilities, batch, rbs, gloss_scores)
+
+                # print('run batch')
+                # print('sample_strategy', self.sample_strategy)
+                # input()
+                encoder_output, new_sgn_mask, batch_pred_gls, has_empty = sparse_sample(
+                    batch_enc_op=encoder_output,
+                    batch_gls_prob=gloss_probabilities_0,  # n,t,c
+                    batch_mask=batch.sgn_mask,  # B,1,L
+                    select_strategy=self.sample_strategy if self.sample_strategy!='top1_random' else 'top1_mean',
+                    return_pred_gls=True,
+                    return_empty_flag=True)   
+
+
             else:
-                decoded_gloss_sequences = {}
-                for rbs in recognition_beam_size:
-                    decoded_gloss_sequences[rbs] = ctc_decode_func(
-                        tf_gloss_probabilities, batch, rbs, gloss_scores)
-
-            # print('run batch')
-            # print('sample_strategy', self.sample_strategy)
-            # input()
-            encoder_output, new_sgn_mask, batch_pred_gls, has_empty = sparse_sample(
-                batch_enc_op=encoder_output,
-                batch_gls_prob=gloss_probabilities_0,  # n,t,c
-                batch_mask=batch.sgn_mask,  # B,1,L
-                select_strategy=self.sample_strategy if self.sample_strategy!='top1_random' else 'top1_mean',
-                return_pred_gls=True,
-                return_empty_flag=True)   
-
-
+                new_sgn_mask = batch.sgn_mask
+                gloss_probabilities = None
+                decoded_gloss_sequences = None
         else:
-            new_sgn_mask = batch.sgn_mask
-            gloss_probabilities = None
+            batch_size = batch.gls_lengths.shape[0]
+            max_len = torch.max(batch.gls_lengths)
+            encoder_output,  new_sgn_mask = self.build_gloss_target_embedding(
+                src_embeddings=torch.zeros([batch_size, max_len, 1024], 
+                    dtype=batch.sgn.dtype, 
+                    device=batch.sgn.device),
+                tgt_ids=self.convert_gls_from_tensor_to_list(batch.gls, batch.gls_lengths),  #ground_truth gls
+                return_mask=True
+            )
             decoded_gloss_sequences = None
 
         if self.pipeline:
@@ -742,15 +768,7 @@ class SignModel_PLM(nn.Module):
                 src_embeddings=torch.zeros([batch_size, max_len, 1024], dtype=encoder_output.dtype, device=encoder_output.device),
                 tgt_ids=batch_pred_gls
             )
-        elif self.use_gt_gloss:
-            batch_size = batch.gls_lengths.shape[0]
-            max_len = torch.max(batch.gls_lengths)
-            encoder_output,  new_sgn_mask = self.build_gloss_target_embedding(
-                src_embeddings=torch.zeros([batch_size, max_len, 1024], dtype=encoder_output.dtype, device=encoder_output.device),
-                tgt_ids=self.convert_gls_from_tensor_to_list(batch.gls, batch.gls_lengths),  #ground_truth gls
-                return_mask=True
-            )
-        elif self.do_translation or self.do_distillation:
+        elif (self.do_translation or self.do_distillation) and not self.use_gt_gloss:
             #intermediate layer 512->1024
             encoder_output = self.preceding_layer(encoder_output)  # B,T,D'
             #note that after transmormation padded features are not zeros!
@@ -772,16 +790,14 @@ class SignModel_PLM(nn.Module):
             output_dict['sequences'] = self.map_new2old(output_dict['sequences'])
             stacked_txt_output_decoded = self.tokenizer.batch_decode(output_dict['sequences'], 
                 skip_special_tokens=True)
-
-
-            #!! split end common and the last word!
-            #print(stacked_txt_output_decoded) #list of string
-            for di, d in enumerate(stacked_txt_output_decoded):
-                if len(d)>2 and d[-1]=='.' and d[-2]!=' ':
-                    d = d[:-1]+ ' .'
-                    stacked_txt_output_decoded[di] = d
-     
-
+            if self.tgt_lang=='de_DE':
+                for di, d in enumerate(stacked_txt_output_decoded):
+                    if len(d)>2 and d[-1]=='.' and d[-2]!=' ':
+                        d = d[:-1]+ ' .'
+                        stacked_txt_output_decoded[di] = d
+            elif self.tgt_lang=='zh_CN':
+                pass
+                #perhaps some post process is needed here
             stacked_attention_scores = None
         else:
             stacked_txt_output_decoded = None
