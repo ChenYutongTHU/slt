@@ -1,3 +1,7 @@
+discard.py
+csl_pipeline
+cfg2scripts.py
+batch_test.py
 my_req.txt
 requirements*.txt
 scripts

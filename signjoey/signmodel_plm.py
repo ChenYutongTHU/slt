@@ -236,22 +236,24 @@ class SignModel_PLM(nn.Module):
             gls_emb_cfg = plm_cfg['gloss_embedding_layer']
             self.gls_emb_freeze = gls_emb_cfg.get('freeze',False)
             self.gls_emb_from_scratch = gls_emb_cfg.get('from_scratch',False)
+            self.gls_target_embedding_layer = torch.nn.Embedding(
+                num_embeddings=len(self.gls_vocab),
+                embedding_dim=self.plm_model.config.d_model,
+                padding_idx=self.gls_vocab.stoi[PAD_TOKEN]) # we would like a padding idx
             if not self.gls_emb_from_scratch:
-                self.gls_target_embedding_layer = torch.nn.Embedding(
-                    num_embeddings=len(self.gls2embed),
-                    embedding_dim=self.plm_model.config.d_model,
-                    padding_idx=self.gls_vocab.stoi[PAD_TOKEN]) # we would like a padding idx
                 #initialize
                 print('initialize gls_emb from gls2embed matrix')
                 with torch.no_grad():
                     for i,s in enumerate(self.gls_vocab.itos):
-                        init_emb = self.gls2embed[s]
-                        self.gls_target_embedding_layer.weight[i,:] = init_emb
+                        if s in self.gls2embed:
+                            init_emb = self.gls2embed[s]
+                            self.gls_target_embedding_layer.weight[i,:] = init_emb
+                            if i==0:
+                                print('init example i{}:s{}'.format(i,s))
+                                print(init_emb)
+                        else:
+                            print('in gls_emb {}:{} from scratch'.format(i,s))
             else:
-                self.gls_target_embedding_layer = torch.nn.Embedding(
-                    num_embeddings=len(self.gls_vocab),
-                    embedding_dim=self.plm_model.config.d_model,
-                    padding_idx=self.gls_vocab.stoi[PAD_TOKEN]) # we would like a padding idx
                 print('gls_emb from scratch, num_embeddings=', len(self.gls_vocab))
             if self.gls_emb_freeze:
                 freeze_params(self.gls_target_embedding_layer)
