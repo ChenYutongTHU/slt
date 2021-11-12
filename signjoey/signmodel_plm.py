@@ -93,6 +93,7 @@ class SignModel_PLM(nn.Module):
         self.gls2embed = torch.load(plm_cfg['gloss_embedding_file'])
 
         if 'fusion' in plm_cfg:
+            raise ValueError # !!gloss_embedding_layer initialize!
             assert self.do_distillation==False
             self.fusion = True
             self.fusion_cfg = plm_cfg['fusion']
@@ -231,30 +232,36 @@ class SignModel_PLM(nn.Module):
                 print('freeze plm embedding!')
                 freeze_params(self.plm_model.model.shared)
             
-
-        if do_distillation:
-            assert 'distillation' in plm_cfg
-            if 'gloss_embedding_layer' in plm_cfg['distillation']:
-                gls_emb_cfg = plm_cfg['distillation']['gloss_embedding_layer']
-                self.gls_emb_freeze = gls_emb_cfg.get('freeze',False)
+        if 'gloss_embedding_layer' in plm_cfg:
+            gls_emb_cfg = plm_cfg['gloss_embedding_layer']
+            self.gls_emb_freeze = gls_emb_cfg.get('freeze',False)
+            self.gls_emb_from_scratch = gls_emb_cfg.get('from_scratch',False)
+            if not self.gls_emb_from_scratch:
                 self.gls_target_embedding_layer = torch.nn.Embedding(
                     num_embeddings=len(self.gls2embed),
                     embedding_dim=self.plm_model.config.d_model,
                     padding_idx=self.gls_vocab.stoi[PAD_TOKEN]) # we would like a padding idx
                 #initialize
+                print('initialize gls_emb from gls2embed matrix')
                 with torch.no_grad():
                     for i,s in enumerate(self.gls_vocab.itos):
                         init_emb = self.gls2embed[s]
                         self.gls_target_embedding_layer.weight[i,:] = init_emb
-
-
-
-                if self.gls_emb_freeze:
-                    freeze_params(self.gls_target_embedding_layer)
-                print('Implement regularization target as a layer, freeze={}'.format(self.gls_emb_freeze))
-                print('Txt embedding layer in plm, freeze={}'.format(plm_cfg.get('freeze_embed',False)))
             else:
-                self.gls_target_embedding_layer = None
+                self.gls_target_embedding_layer = torch.nn.Embedding(
+                    num_embeddings=len(self.gls_vocab),
+                    embedding_dim=self.plm_model.config.d_model,
+                    padding_idx=self.gls_vocab.stoi[PAD_TOKEN]) # we would like a padding idx
+                print('gls_emb from scratch, num_embeddings=', len(self.gls_vocab))
+            if self.gls_emb_freeze:
+                freeze_params(self.gls_target_embedding_layer)
+            print('Implement regularization target as a layer, freeze={}'.format(self.gls_emb_freeze))
+            print('Txt embedding layer in plm, freeze={}'.format(plm_cfg.get('freeze_embed',False)))
+        else:
+            self.gls_target_embedding_layer = None
+
+        if do_distillation:
+            assert 'distillation' in plm_cfg
 
             self.distillation_loss_type = plm_cfg['distillation'].get('loss_type','MSE')
             if self.distillation_loss_type == 'MSE':
@@ -506,6 +513,7 @@ class SignModel_PLM(nn.Module):
                     for ii in range(len(tgt_ids[bi]), max_length): #pad
                         batch_target_embeddings[bi,ii,:] = src_embeddings[bi,ii,:]
                     new_mask[bi,:len(tgt_ids[bi])] = 1
+                #input()
         else:
             padded_tgt_ids = self.gls_vocab.stoi[PAD_TOKEN]*torch.ones(
                 [batch_size, max_length],
