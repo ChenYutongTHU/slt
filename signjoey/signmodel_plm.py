@@ -93,21 +93,17 @@ class SignModel_PLM(nn.Module):
         self.gls2embed = torch.load(plm_cfg['gloss_embedding_file'])
 
         if 'fusion' in plm_cfg:
-            raise ValueError # !!gloss_embedding_layer initialize!
             assert self.do_distillation==False
             self.fusion = True
             self.fusion_cfg = plm_cfg['fusion']
             self.fusion_method = self.fusion_cfg['method']
             self.fusion_fc = self.fusion_cfg['fusion_fc']
+            self.fusion_vis_weight = self.fusion_cfg.get('fusion_vis_weight', 1)
             print('Implementing fusion ', self.fusion_method) #after 'before_add_word_embedding'
             self.fusion_use_gloss, self.fusion_use_vis = self.fusion_cfg['use_gloss'], self.fusion_cfg['use_vis']
             assert self.fusion_use_vis, 'currently do not support fusion_use_vis=False'
             if self.fusion_method == 'prepend':
                 assert self.fusion_use_gloss
-            # if not self.fusion_use_vis:
-            #     if hasattr(self, 'preceding_layer'):
-            #         print('visual input is not used -> preceding layer is not used, freeze it')
-            #         freeze_params(self.preceding_layer)
             if self.fusion_fc:
                 print('Linear transform after fusion')
                 assert self.fusion_use_gloss and self.fusion_use_vis
@@ -121,14 +117,20 @@ class SignModel_PLM(nn.Module):
             else:
                 self.fusion_fc = torch.nn.Identity()
             self.gls_target_embedding_layer = torch.nn.Embedding(
-                num_embeddings=len(self.gls2embed),
+                num_embeddings=len(self.gls_vocab),#len(self.gls2embed),
                 embedding_dim=1024,
                 padding_idx=self.gls_vocab.stoi[PAD_TOKEN]) # we would like a padding idx
-            #initialize
+            #initialize!
             with torch.no_grad():
+                print('initialize gls_target_embedding_layer as gls2embed')
                 for i,s in enumerate(self.gls_vocab.itos):
-                    init_emb = self.gls2embed[s]
-                    self.gls_target_embedding_layer.weight[i,:] = init_emb
+                    if s in self.gls2embed:
+                        init_emb = self.gls2embed[s]
+                        self.gls_target_embedding_layer.weight[i,:] = init_emb
+                    else:
+                        print(s,'not in gls2embed set as zero')
+                        self.gls_target_embedding_layer.weight[i,:] = 0
+                        
             if self.fusion_cfg['freeze_gloss_embedding']:
                 freeze_params(self.gls_target_embedding_layer)
                 print('gls_target_embedding_layer freeze=True')
@@ -387,6 +389,12 @@ class SignModel_PLM(nn.Module):
                 tgt_ids=batch_pred_ids,
                 return_mask=True
             )
+            if 0: #debughere!
+                print('batch_pred_ids')
+                print(batch_pred_ids)
+                print('gloss_embeddings')
+                print(gloss_embeddings)
+                input()
             if self.fusion_use_gloss and not self.fusion_use_vis:
                 return self.prepare_plm_inputs(
                     input_embed = gloss_embeddings,
@@ -449,8 +457,12 @@ class SignModel_PLM(nn.Module):
                 if self.fusion_method=='plus':
                     fusion_input_embed_w_suffix = 0
                     if self.fusion_use_vis:
-                        fusion_input_embed_w_suffix += input_embed_w_suffix
+                        # print('input_embed_w_suffix')
+                        # print(input_embed_w_suffix)
+                        fusion_input_embed_w_suffix += input_embed_w_suffix*self.fusion_vis_weight
                     if self.fusion_use_gloss:
+                        # print('gloss_embedding_w_suffix')
+                        # print(gloss_embedding_w_suffix)
                         fusion_input_embed_w_suffix += gloss_embedding_w_suffix
                 elif self.fusion_method=='cat':
                     fusion_input_embed_w_suffix = []
@@ -464,9 +476,22 @@ class SignModel_PLM(nn.Module):
                 #fc layer!
             fusion_input_embed_w_suffix = self.fusion_fc(fusion_input_embed_w_suffix)
             input_embed_w_suffix = fusion_input_embed_w_suffix*self.plm_embed_scale
+            if 0: #debug here!
+                print('with fusion input_embed')
+                print(self.plm_embed_scale)
+                print(input_embed_w_suffix)
+                #print(input_mask_w_suffix)
+                input()
+
 
         else:
             input_embed_w_suffix = input_embed_w_suffix*self.plm_embed_scale
+            if 0: #debug here!
+                print('without fusion input_embed')
+                print(self.plm_embed_scale)
+                print(input_embed_w_suffix)
+                #print(input_mask_w_suffix)
+                input()
 
         encoder_inputs = {
             'inputs_embeds': input_embed_w_suffix, #B,L,D
@@ -638,6 +663,13 @@ class SignModel_PLM(nn.Module):
                 src_embeddings=torch.zeros([batch_size, max_len, 1024], dtype=encoder_output.dtype, device=encoder_output.device),
                 tgt_ids=batch_pred_gls
             )
+            if 0:
+                print('pipeline')
+                print('batch_pred_gls')
+                print(batch_pred_gls)
+                print('encoder_output')
+                print(encoder_output)
+                input()
         elif (self.do_translation or self.do_distillation) and not self.use_gt_gloss:
             #intermediate layer 512->1024
             if self.input_feature_after_sgnmbed:
@@ -682,12 +714,18 @@ class SignModel_PLM(nn.Module):
                     txt_input=txt_input, txt_mask=txt_mask,
                     fusion=True, 
                     batch_pred_ids=batch_pred_gls)  
-                # print(inputs)
-                # input()
+                if 0:
+                    print('fusion')
+                    print(inputs)
+                    input()
             else:
                 inputs = self.prepare_plm_inputs(
                     input_embed=encoder_output, input_mask=sgn_mask,
-                    txt_input=txt_input, txt_mask=txt_mask)                  
+                    txt_input=txt_input, txt_mask=txt_mask) 
+                if 0:         
+                    print('fusion')
+                    print(inputs)
+                    input()        
             # 'input_ids', 'attention_mask', 'decoder_input_ids' 'decoder_attention_mask' 'labels'
             output_dict = self.plm_model(
                 **inputs, 
@@ -697,6 +735,9 @@ class SignModel_PLM(nn.Module):
             batch_size = output_dict['logits'].shape[0]
             log_prob = torch.nn.functional.log_softmax(
                 output_dict['logits'], dim=-1)  # B, T, L
+            if 0:
+                print(torch.argmax(log_prob, dim=-1))
+                input()
             batch_loss_sum = self.translation_loss_fun(
                 log_probs=log_prob,
                 targets=inputs['labels']
@@ -790,9 +831,27 @@ class SignModel_PLM(nn.Module):
             #print('after transform ', encoder_output.shape)
         
         if self.do_translation:
-            inputs = self.prepare_plm_inputs(
-                input_embed=encoder_output, input_mask=new_sgn_mask,
-                txt_input=None, txt_mask=None)
+            if self.fusion: 
+                assert self.sample_strategy!='all'
+                #input batch_pred_gls
+                inputs = self.prepare_plm_inputs(
+                    input_embed=encoder_output, input_mask=new_sgn_mask,
+                    txt_input=None, txt_mask=None,
+                    fusion=True, 
+                    batch_pred_ids=batch_pred_gls)  
+                if 0:
+                    print('fusion')
+                    print(inputs)
+                    input()
+            else:
+                inputs = self.prepare_plm_inputs(
+                    input_embed=encoder_output, input_mask=new_sgn_mask,
+                    txt_input=None, txt_mask=None) 
+                if 0:         
+                    print('fusion')
+                    print(inputs)
+                    input()   
+
             output_dict = self.plm_model.generate(
                 **inputs,  #include decoder_input_ids
                 max_length=translation_max_output_length,
@@ -803,6 +862,8 @@ class SignModel_PLM(nn.Module):
 
             
             output_dict['sequences'] = self.map_new2old(output_dict['sequences'])
+            if 0:
+                print(output_dict['sequences'])
             stacked_txt_output_decoded = self.tokenizer.batch_decode(output_dict['sequences'], 
                 skip_special_tokens=True)
             if self.tgt_lang=='de_DE':
@@ -895,7 +956,7 @@ class SignModel_PLM(nn.Module):
                     output_attentions=False)  
                     # some redundant computation is made here, I'll improve it later     
                     #              
-                if 1:
+                if 0:
                     #print(num_return_sequences)
                     #print(sparse_samples[ci]['output_sequences'].shape)
                     #print debug
