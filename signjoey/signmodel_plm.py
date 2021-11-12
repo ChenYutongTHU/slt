@@ -77,7 +77,11 @@ class SignModel_PLM(nn.Module):
         self.pipeline = plm_cfg.get('pipeline',False)
         self.freeze_ctc = plm_cfg.get('freeze_ctc', False)
         self.use_gt_gloss = plm_cfg.get('use_gt_gloss', False)
-
+        if 'decoder_mask' in plm_cfg:
+            self.decoder_mask_prob = plm_cfg['decoder_mask'].get('prob', 1)
+            print('randomly mask decoder inputs prob=', self.decoder_mask_prob)
+        else:
+            self.decoder_mask_prob = 0
         if self.use_gt_gloss:
             print('use gt gloss, freeze_ctc=',self.freeze_ctc)
             assert not self.pipeline
@@ -372,6 +376,10 @@ class SignModel_PLM(nn.Module):
             self.tokenizer.pad_token_id,
             ignore_index=self.ignore_index) #[lang, ]
         decoder_attention_mask = labels['attention_mask'] #attention mask keeps the same after shifting
+
+        if self.decoder_mask_prob>0:
+            random_mask = torch.rand(decoder_attention_mask.shape)>self.decoder_mask_prob
+            decoder_attention_mask = decoder_attention_mask*random_mask
         return label_input_ids.to(device), decoder_input_ids.to(device), decoder_attention_mask.to(device)
 
     def prepare_plm_inputs(self,input_embed, input_mask, txt_input=None, txt_mask=None,
@@ -502,7 +510,7 @@ class SignModel_PLM(nn.Module):
             txt_lengths = torch.sum(
                 txt_mask, dim=-1).squeeze(1)  # B (including)
             txt_label, txt_input, txt_mask_transformer = self.prepare_txt_input(
-                txt_input, txt_lengths)
+                txt_input, txt_lengths) #mask!
             decoder_inputs = {
                 'decoder_input_ids': txt_input,
                 'decoder_attention_mask': txt_mask_transformer,
