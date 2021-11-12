@@ -508,9 +508,13 @@ class SignModel_PLM(nn.Module):
                     #print('sample ', bi)
                     for ii,gid in enumerate(tgt_ids[bi]):
                         g_str = self.gls_vocab.itos[gid]
-                        #print(gid, g_str, end=' ')
-                        g_tgt_emb = self.gls2embed[g_str]
-                        batch_target_embeddings[bi,ii,:] = g_tgt_emb
+                        if not g_str in self.gls2embed:
+                            print(gid, g_str, end=' ')
+                            batch_target_embeddings[bi,ii,:] = src_embeddings[bi, ii, :]
+                            #     input()
+                        else:
+                            g_tgt_emb = self.gls2embed[g_str]
+                            batch_target_embeddings[bi,ii,:] = g_tgt_emb
                     #print()
                     for ii in range(len(tgt_ids[bi]), max_length): #pad
                         batch_target_embeddings[bi,ii,:] = src_embeddings[bi,ii,:]
@@ -554,7 +558,8 @@ class SignModel_PLM(nn.Module):
         loss = self.distillation_loss_fun(input=src_embeddings, target=batch_target_embeddings) #B,T,D
         #BTD reduce=None normalize by  valid_total_length
         eps = 1.0e-10
-        loss = torch.sum(loss)/(valid_total_length+eps)
+
+        loss = torch.sum(loss)/(valid_total_length+eps)/src_embeddings.shape[-1] # D
         return loss
 
     def encode(
