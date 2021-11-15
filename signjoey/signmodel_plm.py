@@ -16,8 +16,10 @@ from signjoey.vocabulary import (
 from transformers import MBartForConditionalGeneration, MBartTokenizer
 from signjoey.loss import XentLoss
 from collections import defaultdict
-from signjoey.helpers import freeze_params, sparse_sample, shift_tokens_right, ctc_decode_func
+from signjoey.helpers import freeze_params, get_spans, sparse_sample, shift_tokens_right, ctc_decode_func
 from copy import deepcopy
+from helpers import get_spans_sequence 
+import random
 
 class PrecedingLayer(nn.Module):
     def __init__(
@@ -88,7 +90,15 @@ class SignModel_PLM(nn.Module):
             assert not do_distillation and not do_recognition
         if self.pipeline:
             assert not do_distillation and do_recognition
-
+        
+        if 'gloss_augmentation' in self.plm_cfg:
+            self.gloss_augmentation = True
+            with open(self.plm_cfg['gloss_augmentation']['bank_file'],'rb') as f:
+                self.gloss_bank = pickle.load(f)
+            self.gloss_bank = dict(self.gloss_bank) # not default_dict
+            self.gloss_replace_prob = self.plm_cfg['gloss_augmentation']['prob']
+        else:
+            self.gloss_augmentation = False
 
 
         assert self.plm_type in ['mbart']
@@ -542,8 +552,12 @@ class SignModel_PLM(nn.Module):
                     for ii,gid in enumerate(tgt_ids[bi]):
                         g_str = self.gls_vocab.itos[gid]
                         if not g_str in self.gls2embed:
-                            print(gid, g_str, end=' ')
-                            batch_target_embeddings[bi,ii,:] = src_embeddings[bi, ii, :]
+                            if self.fusion and self.sample_strategy=='all':
+                                #add zero
+                                batch_target_embeddings[bi,ii,:] = 0
+                            else:
+                                print(gid, g_str, end=' ')
+                                batch_target_embeddings[bi,ii,:] = src_embeddings[bi, ii, :]
                             #     input()
                         else:
                             g_tgt_emb = self.gls2embed[g_str]
@@ -680,6 +694,56 @@ class SignModel_PLM(nn.Module):
                 input()
         elif (self.do_translation or self.do_distillation) and not self.use_gt_gloss:
             #intermediate layer 512->1024
+            if self.gloss_augmentation and self.training:
+                assert self.sample_strategy=='all'
+                batch_size = encoder_output.shape[0]
+                augmented_encoder_outputs, augmented_sgn_lengths = [], []
+                for b in range(batch_size):
+                    length0 = batch.sgn_lengths[b].long()
+                    sort_idx = torch.argsort(-1*gloss_scores[b,:length0,:], dim=-1) #T,C
+                    spans = get_spans_sequence(sort_idx) #[st, end, pred_id]
+                    aug_feature_list = [] # [(t1,D),(t2,D)]
+                    for (st, ed, gid) in spans:
+                        if gid==0 or (self.gls_vocab.itos[gid] not in self.gloss_bank):
+                            aug_feature_list.append(encoder_output[b,st:ed,:]) #T,D
+                        elif np.random.rand(1)>self.gloss_replace_prob:
+                            aug_feature_list.append(encoder_output[b,st:ed,:])
+                        else:
+                            #randomly choose one from memory bank
+                            try:
+                                feature_from_bank = random.choice(self.gloss_bank[self.gls_vocab.itos[gid]]) #T,D
+                            except:
+                                print(self.gloss_bank[self.gls_vocab.itos[gid]])
+                            feature_from_bank = torch.tensor(feature_from_bank, 
+                                dtype=encoder_output.dtype,
+                                device=encoder_output.device)
+                            aug_feature_list.append(feature_from_bank)
+                    aug_feature = torch.cat(aug_feature_list, dim=0) #T,D
+                    augmented_encoder_outputs.append(aug_feature)
+                    augmented_sgn_lengths.append(aug_feature.shape[0])
+
+                #padding and buid mask
+                max_length = max(augmented_sgn_lengths)
+                augmented_sgn_masks = torch.zeros(
+                    [batch_size, 1, max_length],
+                    dtype=sgn_mask.dtype,
+                    device=sgn_mask.device)
+                for b in range(batch_size):
+                    cur_len = augmented_sgn_lengths[b]
+                    augmented_sgn_masks[b,:,:cur_len] = 1
+                    if cur_len<max_length:
+                        augmented_encoder_outputs[b] = torch.cat(
+                            [augmented_encoder_outputs[b], 
+                            torch.zeros(
+                                [max_length-cur_len,augmented_encoder_outputs[b].shape[1]],
+                                device=encoder_output.device,
+                                dtype=encoder_output.dtype
+                            )],
+                            dim=0) #T,D
+                encoder_output = torch.stack(augmented_encoder_outputs, dim=0) #B,T,D
+                sgn_mask = augmented_sgn_masks
+
+
             if self.input_feature_after_sgnmbed:
                 assert not self.do_distillation
                 encoder_output = self.preceding_layer(self.sgn_embed(x=sgn, mask=sgn_mask))
@@ -715,7 +779,7 @@ class SignModel_PLM(nn.Module):
         if self.do_translation:
             #encoder_output -> translation loss
             if self.fusion: 
-                assert self.sample_strategy!='all'
+                #assert self.sample_strategy!='all'
                 #input batch_pred_gls
                 inputs = self.prepare_plm_inputs(
                     input_embed=encoder_output, input_mask=sgn_mask,
@@ -840,7 +904,7 @@ class SignModel_PLM(nn.Module):
         
         if self.do_translation:
             if self.fusion: 
-                assert self.sample_strategy!='all'
+                #assert self.sample_strategy!='all'
                 #input batch_pred_gls
                 inputs = self.prepare_plm_inputs(
                     input_embed=encoder_output, input_mask=new_sgn_mask,

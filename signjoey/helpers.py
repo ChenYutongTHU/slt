@@ -7,6 +7,8 @@ import glob
 import os, math
 import os.path
 import sys
+
+from signjoey import batch
 sys.path.append(os.getcwd())#slt dir
 import errno
 import shutil
@@ -105,7 +107,56 @@ def get_all_combinations(gls_prob):
 
     return results
 
+from collections import OrderedDict
 
+
+def get_spans(sort_idx,topk='top2'):
+    pred2spans = OrderedDict()
+    i, j = 0, 0
+    t = sort_idx.shape[0]
+    while i < t:
+        span_id = []
+        while i < t and sort_idx[i, 0] == 0:
+            i += 1
+        if i >= t:
+            break
+        j = i
+        cur_pred = sort_idx[i, 0]
+        while j < t and sort_idx[j, 0] == cur_pred:
+            span_id.append(j)  # top1
+            j += 1
+        if topk == 'top1':
+            pass
+        elif topk == 'top2':
+            #left span (top2)
+            i -= 1
+            while i >= 0 and sort_idx[i, 0] == 0 and sort_idx[i, 1] == cur_pred:
+                span_id.append(i)
+                i -= 1
+            #right span
+            while j < t and sort_idx[j, 0] == 0 and sort_idx[j, 1] == cur_pred:
+                span_id.append(j)
+                j += 1
+        else:
+            raise ValueError
+        i = j
+        pred2spans[cur_pred] = sorted(span_id)
+    return pred2spans
+def get_spans_sequence(sort_idx):
+    t = sort_idx.shape[0] # T,V
+    pred2spans = get_spans(sort_idx)
+
+    spans_pred = []
+    pt = 0
+    for pred, spans in pred2spans.items():
+        if spans[0]>pt:
+            spans_pred.append([pt, spans[0],0]) # [start,end), type
+            pt = spans[-1]+1
+        spans_pred.append([spans[0],spans[-1]+1,pred.item()])
+    if pt<t:
+        spans_pred.append([pt,t,0])
+    return spans_pred
+    
 def sparse_sample(batch_enc_op, batch_gls_prob, batch_mask, 
     select_strategy='all', return_pred_gls=False,
     return_empty_flag=False):
@@ -113,15 +164,21 @@ def sparse_sample(batch_enc_op, batch_gls_prob, batch_mask,
     #gls_prob B,T,C
     #batch_mask B,1,T
     #select_strategy format ['all','random_num_top1', 'top1/2_mean/max/random/all']
+    batch_size = batch_enc_op.shape[0]
     if select_strategy == 'all':
         outputs = (batch_enc_op, batch_mask)
         if return_pred_gls:
-            outputs += (None,)
+            batch_pred_gls = []
+            for b in range(batch_size):
+                length = torch.sum(batch_mask[b])
+                gls_prob = batch_gls_prob[b, :length]
+                gls_pred = torch.argmax(gls_prob, axis=1)
+                batch_pred_gls.append([gls_pred[i].item() for i in range(length)])
+            outputs += (batch_pred_gls,)
         if return_empty_flag:
             outputs += ([],)
         return outputs
 
-    batch_size = batch_enc_op.shape[0]
     empty_ids=[]
     #assert batch_size == 1, 'currently only support batch_size=1!'
     batch_selected_op = []
