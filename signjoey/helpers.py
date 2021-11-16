@@ -8,8 +8,9 @@ import os, math
 import os.path
 import sys
 
-from signjoey import batch
+
 sys.path.append(os.getcwd())#slt dir
+from signjoey import batch
 import errno
 import shutil
 import random

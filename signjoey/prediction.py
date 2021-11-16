@@ -189,7 +189,10 @@ def validate_on_data(
         print('Set module.set_train()')
         model.module.set_train()
 
-    model_name = model.module.__class__.__name__
+    if input_data=='feature':
+        model_name = model.module.__class__.__name__
+    elif input_data=='image':
+        model_name = model.module.signmodel.__class__.__name__
     # don't track gradients during validation
     with torch.no_grad():
         all_gls_outputs = [] if (type(recognition_beam_size)==int or do_recognition==False) else defaultdict(list)

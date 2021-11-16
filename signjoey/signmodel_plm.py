@@ -76,6 +76,7 @@ class SignModel_PLM(nn.Module):
         self.tgt_lang = plm_cfg.get('tgt_lang','de_DE')
 
         self.plm_type = plm_cfg.get('type','mbart').lower()
+        self.use_logits = plm_cfg.get('use_logits', False)
         self.pipeline = plm_cfg.get('pipeline',False)
         self.freeze_ctc = plm_cfg.get('freeze_ctc', False)
         self.use_gt_gloss = plm_cfg.get('use_gt_gloss', False)
@@ -197,6 +198,14 @@ class SignModel_PLM(nn.Module):
                     hidden_size=plm_cfg['preceding_layer'].get(
                         'hidden_size', 1024),
                     num_layers=plm_cfg['preceding_layer'].get('num_layers', 2))
+            elif self.use_logits:
+                print('input feature as gloss logits')
+                self.preceding_layer = PrecedingLayer(
+                    in_features=len(self.gls_vocab),
+                    out_features=1024,  # mBart
+                    hidden_size=plm_cfg['preceding_layer'].get(
+                        'hidden_size', 1024),
+                    num_layers=plm_cfg['preceding_layer'].get('num_layers', 2))                
             else:
                 self.preceding_layer = PrecedingLayer(
                     in_features=self.encoder.output_size,
@@ -608,7 +617,7 @@ class SignModel_PLM(nn.Module):
 
         loss = torch.sum(loss)/(valid_total_length+eps)/src_embeddings.shape[-1] # D
         return loss
-
+ 
     def encode(
         self, sgn: Tensor, sgn_mask: Tensor, sgn_length: Tensor, output_attention: bool = False
     ) -> (Tensor, Tensor):
@@ -655,6 +664,8 @@ class SignModel_PLM(nn.Module):
                 other_outputs['gloss_distribution'] = gloss_probabilities
                 # Turn it into T x N x C
                 gloss_probabilities = gloss_probabilities.permute(1, 0, 2)
+                if self.use_logits:
+                    encoder_output = gloss_scores
                 encoder_output, sgn_mask, batch_pred_gls = sparse_sample(
                     batch_enc_op=encoder_output, 
                     batch_gls_prob=gloss_probabilities.permute(1,0,2).detach(), # n,t,c
@@ -864,6 +875,8 @@ class SignModel_PLM(nn.Module):
                 # print('run batch')
                 # print('sample_strategy', self.sample_strategy)
                 # input()
+                if self.use_logits:
+                    encoder_output = gloss_scores
                 encoder_output, new_sgn_mask, batch_pred_gls, has_empty = sparse_sample(
                     batch_enc_op=encoder_output,
                     batch_gls_prob=gloss_probabilities_0,  # n,t,c

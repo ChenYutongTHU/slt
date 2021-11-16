@@ -91,7 +91,8 @@ def get_loss_for_batch(
             raise ValueError
 
     elif input_data=='image':
-        (decoder_outputs, gloss_probabilities, attention, encoder_outputs), batch.sgn, batch.sgn_mask, batch.sgn_lengths = model(
+        signmodel_name = model.module.signmodel.__class__.__name__
+        signmodel_outputs, batch.sgn, batch.sgn_mask, batch.sgn_lengths = model(
             sgn_img=batch.sgn_img,
             sgn_mask=batch.sgn_mask,
             sgn_lengths=batch.sgn_lengths,
@@ -99,9 +100,14 @@ def get_loss_for_batch(
             txt_mask=batch.txt_mask,
             output_attention=output_attention
         )
-        other_outputs['encoder_outputs'] = encoder_outputs
-        other_outputs['sgn_feature'] = batch.sgn
-        
+        if signmodel_name == 'SignModel':
+            decoder_outputs, gloss_probabilities, attention, encoder_outputs = signmodel_outputs
+            other_outputs['encoder_outputs'] = encoder_outputs
+            other_outputs['sgn_feature'] = batch.sgn
+        elif signmodel_name == 'SignModel_PLM':
+            translation_loss, gloss_probabilities, attention, encoder_outputs, distillation_loss, other_outputs = signmodel_outputs
+
+
     elif input_data=='gloss':
         if model_name == 'SignModel':
             decoder_outputs, _, attention, encoder_outputs = model(
