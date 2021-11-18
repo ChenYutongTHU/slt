@@ -27,6 +27,29 @@ import yaml
 from signjoey.vocabulary import GlossVocabulary, TextVocabulary
 import tensorflow as tf
 from itertools import groupby
+def batch_random_copy(batch_ids, min_=1, max_=6, unk_ratio=0, unk_index=2):
+    copied_batch_ids = []
+    for ids in batch_ids:
+        copied_ids =[]
+        for i in ids:
+            span_width = np.random.randint(min_, max_+1)
+            unk_num = int(np.random.rand()*unk_ratio*span_width)
+            if unk_num>0:
+                id_num = span_width-unk_num
+                unk_num_1 = np.random.randint(0, unk_num)
+                unk_num_2 = unk_num-unk_num_1
+                span_ids = [unk_index]*unk_num_1 + [i]*id_num + [unk_index]*unk_num_2
+            else:
+                span_ids = [i]*span_width
+            copied_ids.extend(span_ids)
+        copied_batch_ids.append(copied_ids)
+    # if 'copy_debug':
+    #     print(batch_ids)
+    #     print(unk_ratio)
+    #     print(copied_batch_ids)
+    #     input()
+    return copied_batch_ids
+
 
 def ctc_decode_func(tf_gloss_probabilities, batch, recognition_beam_size, gloss_scores):
     assert recognition_beam_size > 0

@@ -18,8 +18,34 @@ from signjoey.loss import XentLoss
 from collections import defaultdict
 from signjoey.helpers import freeze_params, get_spans, sparse_sample, shift_tokens_right, ctc_decode_func
 from copy import deepcopy
-from helpers import get_spans_sequence 
+from helpers import get_spans_sequence, batch_random_copy
 import random
+class PrecedingLayer_weighted_embed(nn.Module):
+    def __init__(
+        self, 
+        index2str,
+        init_weight,
+        out_features=1024,
+        freeze=True
+    ):
+        super().__init__()
+        self.fc = nn.Linear(in_features=len(index2str),out_features=out_features, bias=False)
+        with torch.no_grad():
+            for i,s in enumerate(index2str):
+                if s in init_weight:
+                    self.fc.weight[:,i] = init_weight[s]
+                    if i==100:
+                        print(i, s, self.fc.weight[:,i])
+                else:
+                    print('{} not in gls2embed, set fc to zero'.format(s))
+                    self.fc.weight[i,:] = 0
+
+        if freeze:
+            freeze_params(self.fc)
+
+    def forward(self,x):
+        return self.fc(x)
+
 
 class PrecedingLayer(nn.Module):
     def __init__(
@@ -80,6 +106,14 @@ class SignModel_PLM(nn.Module):
         self.pipeline = plm_cfg.get('pipeline',False)
         self.freeze_ctc = plm_cfg.get('freeze_ctc', False)
         self.use_gt_gloss = plm_cfg.get('use_gt_gloss', False)
+        if self.use_gt_gloss and 'copy_gloss' in plm_cfg:
+            self.copy_gloss = True
+            self.copy_gloss_min, self.copy_gloss_max = plm_cfg['copy_gloss']['min'], plm_cfg['copy_gloss']['max']
+            print('Copy gloss to [{},{}]'.format(self.copy_gloss_min, self.copy_gloss_max))
+            self.copy_gloss_unk_ratio = plm_cfg['copy_gloss'].get('unk_ratio', 0)
+        else:
+            self.copy_gloss = False
+
         if 'decoder_mask' in plm_cfg:
             self.decoder_mask_prob = plm_cfg['decoder_mask'].get('prob', 1)
             print('randomly mask decoder inputs prob=', self.decoder_mask_prob)
@@ -205,7 +239,17 @@ class SignModel_PLM(nn.Module):
                     out_features=1024,  # mBart
                     hidden_size=plm_cfg['preceding_layer'].get(
                         'hidden_size', 1024),
-                    num_layers=plm_cfg['preceding_layer'].get('num_layers', 2))                
+                    num_layers=plm_cfg['preceding_layer'].get('num_layers', 2))           
+            elif 'preceding_layer_weighted_embed' in plm_cfg:
+                freeze_preceding_layer = plm_cfg['preceding_layer_weighted_embed'].get('freeze', True)
+                print('Use gls2embed to initialize preceding_Layer, freeze=', freeze_preceding_layer)
+                #assert self.encoder.output_size==len(self.gls_vocab.itos),(self.encoder.output_size, self.gls_vocab.itos)
+                self.preceding_layer = PrecedingLayer_weighted_embed(
+                    index2str = self.gls_vocab.itos,
+                    init_weight = self.gls2embed,
+                    freeze = freeze_preceding_layer,
+                    out_features=1024
+                )
             else:
                 self.preceding_layer = PrecedingLayer(
                     in_features=self.encoder.output_size,
@@ -666,6 +710,9 @@ class SignModel_PLM(nn.Module):
                 gloss_probabilities = gloss_probabilities.permute(1, 0, 2)
                 if self.use_logits:
                     encoder_output = gloss_scores
+                if self.preceding_layer.__class__.__name__ == 'PrecedingLayer_weighted_embed':
+                    softmax = torch.nn.Softmax(dim=2)
+                    encoder_output = softmax(gloss_scores)
                 encoder_output, sgn_mask, batch_pred_gls = sparse_sample(
                     batch_enc_op=encoder_output, 
                     batch_gls_prob=gloss_probabilities.permute(1,0,2).detach(), # n,t,c
@@ -680,11 +727,18 @@ class SignModel_PLM(nn.Module):
             batch_size = batch.gls_lengths.shape[0]
             max_len = torch.max(batch.gls_lengths)
             #print(batch.sequence)
+            tgt_ids = self.convert_gls_from_tensor_to_list(batch.gls, batch.gls_lengths)
+            if self.copy_gloss:
+                tgt_ids = batch_random_copy(tgt_ids, 
+                    min_=self.copy_gloss_min, max_=self.copy_gloss_max,
+                    unk_ratio=self.copy_gloss_unk_ratio,
+                    unk_index=self.gls_vocab.stoi['<unk>'])
+                max_len = max([len(ids) for ids in tgt_ids])
             encoder_output, sgn_mask = self.build_gloss_target_embedding(
                 src_embeddings=torch.zeros([batch_size, max_len, 1024], 
                     dtype=batch.sgn.dtype, 
                     device=batch.sgn.device),
-                tgt_ids=self.convert_gls_from_tensor_to_list(batch.gls, batch.gls_lengths),  #ground_truth gls
+                tgt_ids=tgt_ids,  #ground_truth gls
                 return_mask=True
             )
             gloss_probabilities, attention = None, None
@@ -877,6 +931,9 @@ class SignModel_PLM(nn.Module):
                 # input()
                 if self.use_logits:
                     encoder_output = gloss_scores
+                if self.preceding_layer.__class__.__name__ == 'PrecedingLayer_weighted_embed':
+                    softmax = torch.nn.Softmax(dim=2)
+                    encoder_output = softmax(gloss_scores)
                 encoder_output, new_sgn_mask, batch_pred_gls, has_empty = sparse_sample(
                     batch_enc_op=encoder_output,
                     batch_gls_prob=gloss_probabilities_0,  # n,t,c
@@ -893,11 +950,18 @@ class SignModel_PLM(nn.Module):
         else:
             batch_size = batch.gls_lengths.shape[0]
             max_len = torch.max(batch.gls_lengths)
+            tgt_ids = self.convert_gls_from_tensor_to_list(batch.gls, batch.gls_lengths)
+            if self.copy_gloss:
+                tgt_ids = batch_random_copy(tgt_ids, 
+                    min_=self.copy_gloss_min, max_=self.copy_gloss_max,
+                    unk_ratio=self.copy_gloss_unk_ratio,
+                    unk_index=self.gls_vocab.stoi['<unk>'])
+                max_len = max([len(ids) for ids in tgt_ids])
             encoder_output,  new_sgn_mask = self.build_gloss_target_embedding(
                 src_embeddings=torch.zeros([batch_size, max_len, 1024], 
                     dtype=batch.sgn.dtype, 
                     device=batch.sgn.device),
-                tgt_ids=self.convert_gls_from_tensor_to_list(batch.gls, batch.gls_lengths),  #ground_truth gls
+                tgt_ids=tgt_ids,  #ground_truth gls
                 return_mask=True
             )
             decoded_gloss_sequences = None
