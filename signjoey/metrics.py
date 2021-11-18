@@ -4,7 +4,7 @@ This module holds various MT evaluation metrics.
 """
 
 from signjoey.external_metrics import sacrebleu
-from signjoey.external_metrics import mscoco_rouge
+from signjoey.external_metrics import mscoco_rouge, rouge_2
 import numpy as np
 
 WER_COST_DEL = 3
@@ -85,7 +85,8 @@ def sequence_accuracy(references, hypotheses):
     return (correct_sequences / len(hypotheses)) * 100 if hypotheses else 0.0
 
 
-def rouge(references, hypotheses, level='word'):
+def rouge_deprecated(references, hypotheses, level='word'):
+    #beta 1.2
     rouge_score = 0
     n_seq = len(hypotheses)
     if level=='char':
@@ -98,6 +99,15 @@ def rouge(references, hypotheses, level='word'):
 
     return rouge_score * 100
 
+def rouge(references, hypotheses, level='word'):
+    if level=='char':
+        hyp = [list(x) for x in hypotheses]
+        ref = [list(x) for x in references]
+    else:
+        hyp = [x.split() for x in hypotheses]
+        ref = [x.split() for x in references]
+    a = rouge_2.rouge([' '.join(x) for x in hyp], [' '.join(x) for x in ref])
+    return a['rouge_l/f_score']*100
 
 def wer_list(references, hypotheses):
     total_error = total_del = total_ins = total_sub = total_ref_len = 0
