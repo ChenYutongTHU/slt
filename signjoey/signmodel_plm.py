@@ -32,7 +32,10 @@ class PrecedingLayer_weighted_embed(nn.Module):
         self.fc = nn.Linear(in_features=len(index2str),out_features=out_features, bias=False)
         with torch.no_grad():
             for i,s in enumerate(index2str):
-                if s in init_weight:
+                if s in [SIL_TOKEN, UNK_TOKEN, PAD_TOKEN, EOS_TOKEN,BOS_TOKEN]:
+                    print('special token {}, set fc to zero'.format(s))
+                    self.fc.weight[i,:] = 0
+                elif s in init_weight:
                     self.fc.weight[:,i] = init_weight[s]
                     if i==100:
                         print(i, s, self.fc.weight[:,i])
