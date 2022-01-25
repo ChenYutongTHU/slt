@@ -2,7 +2,6 @@
 from logging import error
 import math, os
 import random
-from turtle import down
 import torch
 import numpy as np
 import torchtext
