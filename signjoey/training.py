@@ -3,7 +3,6 @@ from collections import defaultdict
 import pickle
 from typing import List, Dict
 import os
-from typing_extensions import ParamSpec
 os.environ['MKL_THREADING_LAYER'] = 'GNU'
 import warnings
 from google.protobuf.reflection import ParseMessage

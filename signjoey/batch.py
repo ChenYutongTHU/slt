@@ -2,6 +2,7 @@
 from logging import error
 import math, os
 import random
+from turtle import down
 import torch
 import numpy as np
 import torchtext
@@ -249,6 +250,7 @@ class Batch_from_examples(Batch):
         if input_data == 'feature':
             self.sgn, self.sgn_lengths = torch_batch.sgn
             # Here be dragons
+            
             if frame_subsampling_ratio:
                 tmp_sgn = torch.zeros_like(self.sgn)
                 tmp_sgn_lengths = torch.zeros_like(self.sgn_lengths)
@@ -265,9 +267,10 @@ class Batch_from_examples(Batch):
                     tmp_data = tmp_data[init_frame::frame_subsampling_ratio]
                     tmp_sgn[idx, 0: tmp_data.shape[0]] = tmp_data
                     tmp_sgn_lengths[idx] = tmp_data.shape[0]
-
                 self.sgn = tmp_sgn[:, : tmp_sgn_lengths.max().long(), :]
                 self.sgn_lengths = tmp_sgn_lengths
+
+                
 
             if random_frame_masking_ratio and is_train:
                 tmp_sgn = torch.zeros_like(self.sgn)
@@ -324,7 +327,7 @@ class Batch_from_examples(Batch):
             self.sgn_mask = torch.tensor(self.sgn_mask, dtype=torch.bool).unsqueeze(1)
             self.sgn_img = torch.stack(self.sgn_img, dim=0) #(l1+l2+l3+..l4), C,H,W
         elif input_data == 'image':
-            assert downsample==1, (downsample)
+            #assert downsample==1, (downsample)
             # 3d preprocess, adapted from Menghan's code
             dataset_info = dict()
             dataset_info['model'], dataset_info['pretask'] = tokenizer_type, pre_task[tokenizer_type]
@@ -385,6 +388,9 @@ class Batch_from_examples(Batch):
                     len(image_path_list), tmin=dat_min, tmax=dat_max,
                     level=data_cfg['temporal_augmentation'].get('level','sentence') if 'temporal_augmentation' in data_cfg else 'sentence',
                     num_tokens=num_tokens)
+                if downsample>1:
+                    selected_indexs = selected_indexs[::downsample]
+                    valid_len = len(selected_indexs)
                 self.sgn_lengths.append(valid_len)  # l0,l1,l2,l3,l4
                 frame_seq = self.load_frames(image_path_list, selected_indexs, 
                     dataset_name=dataset_info['dataset_name'])
