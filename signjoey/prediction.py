@@ -567,9 +567,11 @@ def test(
 
     if "output_translation_input" in cfg["testing"]:
         print('output_translation_input set batch_size=1 to prevent padding!')
-        cfg["training"]["batch_size"] = 1
-
-    batch_size = cfg["training"]["batch_size"]
+        cfg["testing"]["batch_size"] = 1
+    
+    if 'batch_size' not in cfg['testing']:
+        cfg["testing"]["batch_size"] = cfg['training']['batch_size']
+    batch_size = cfg["testing"]["batch_size"]
     batch_type = cfg["training"].get("batch_type", "sentence")
     use_cuda = cfg["training"].get("use_cuda", False)
     level = cfg["data"]["level"]

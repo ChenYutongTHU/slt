@@ -14,12 +14,14 @@ from signjoey.vocabulary import (
     BOS_TOKEN,
 )
 from transformers import MBartForConditionalGeneration, MBartTokenizer
+from transformers import GPT2Tokenizer, GPT2LMHeadModel, AutoTokenizer
 from signjoey.loss import XentLoss
 from collections import defaultdict
 from signjoey.helpers import freeze_params, get_spans, sparse_sample, shift_tokens_right, ctc_decode_func
 from copy import deepcopy
 from helpers import get_spans_sequence, batch_random_copy
 import random
+DEBUG = False
 class PrecedingLayer_weighted_embed(nn.Module):
     def __init__(
         self, 
@@ -139,7 +141,7 @@ class SignModel_PLM(nn.Module):
             self.gloss_augmentation = False
 
 
-        assert self.plm_type in ['mbart']
+        assert self.plm_type in ['mbart', 'gpt2']
         #gloss2embed
         assert os.path.isfile(plm_cfg['gloss_embedding_file'])
         self.gls2embed = torch.load(plm_cfg['gloss_embedding_file'])
@@ -211,7 +213,8 @@ class SignModel_PLM(nn.Module):
             else:
                 print('Warning! src_lang={}'.format(self.src_lang))            
             self.tokenizer.src_lang = self.src_lang
-
+        if self.plm_type == 'gpt2':
+            self.tokenizer = AutoTokenizer.from_pretrained(plm_cfg['pretrained_dir'])
 
         if do_recognition:
             self.gloss_output_layer = gloss_output_layer
@@ -254,47 +257,58 @@ class SignModel_PLM(nn.Module):
                     out_features=1024
                 )
             else:
+                out_features = 1024 if self.plm_type=='mbart' else 768
                 self.preceding_layer = PrecedingLayer(
                     in_features=self.encoder.output_size,
-                    out_features=1024, #mBart
-                    hidden_size=plm_cfg['preceding_layer'].get('hidden_size', 1024),
+                    out_features=out_features, #mBart
+                    hidden_size=plm_cfg['preceding_layer'].get('hidden_size', out_features),
                     num_layers=plm_cfg['preceding_layer'].get('num_layers', 2))        
         if do_translation:
-            self.plm_model = MBartForConditionalGeneration.from_pretrained(
-                plm_cfg['pretrained_dir'],
-                **plm_cfg['overwrite_mbart_cfg']
-                ) 
-            self.plm_embed_scale = math.sqrt(self.plm_model.config.d_model)
-            #OLD2NEW file
-            old2new_file=os.path.join(plm_cfg['pretrained_dir'], 'old2new_vocab.pkl')
-            assert os.path.isfile(old2new_file), old2new_file
-            print('Map old id to new id use ',old2new_file)
-            with open(old2new_file,'rb') as f:
-                self.old2new = pickle.load(f)
-            # old (id output by tokenizer 0~250026) new(id in mBart_De with restricted vocab 0~4107/3046)
-            # self.old2new = defaultdict(lambda: 3, old2new) #3 unk I remove this line as the newly updated mBart_gls_embedding.bin should cover all glosses in the corpus
-            # However, it is still possible that the mBart outputs some word that is not existed in original mBart, e.g. de_DGS
-            self.new2old = defaultdict(lambda: 3) #
-            for o,n in self.old2new.items():
-                assert n>=0 and n<self.plm_model.config.vocab_size, (n, self.plm_model.config.vocab_size)
-                if type(o) != str:
-                    self.new2old[n] = o
+            if self.plm_type == 'mbart':
+                self.plm_model = MBartForConditionalGeneration.from_pretrained(
+                    plm_cfg['pretrained_dir'],
+                    **plm_cfg['overwrite_mbart_cfg']
+                    ) 
+                self.plm_embed_scale = math.sqrt(self.plm_model.config.d_model)
+                #OLD2NEW file
+                old2new_file=os.path.join(plm_cfg['pretrained_dir'], 'old2new_vocab.pkl')
+                assert os.path.isfile(old2new_file), old2new_file
+                print('Map old id to new id use ',old2new_file)
+                with open(old2new_file,'rb') as f:
+                    self.old2new = pickle.load(f)
+                # old (id output by tokenizer 0~250026) new(id in mBart_De with restricted vocab 0~4107/3046)
+                # self.old2new = defaultdict(lambda: 3, old2new) #3 unk I remove this line as the newly updated mBart_gls_embedding.bin should cover all glosses in the corpus
+                # However, it is still possible that the mBart outputs some word that is not existed in original mBart, e.g. de_DGS
+                self.new2old = defaultdict(lambda: 3) #
+                for o,n in self.old2new.items():
+                    assert n>=0 and n<self.plm_model.config.vocab_size, (n, self.plm_model.config.vocab_size)
+                    if type(o) != str:
+                        self.new2old[n] = o
 
-            if plm_cfg.get('src_lang_code_from_scratch',True):
-                src_lang_id = self.tokenizer.lang_code_to_id[self.tokenizer.src_lang]
-                src_lang_id_in_model = self.old2new[src_lang_id]
-                print('Reinitialize src_lang_code {} {}  {}'.format(
-                    self.tokenizer.src_lang, 
-                    src_lang_id, src_lang_id_in_model))
-                print('Before re-initialize')
-                print(self.tokenizer.src_lang)
-                print(self.plm_model.model.shared.weight[src_lang_id_in_model, :])
-                print('=corresponding ?tgt_lang ',self.tgt_lang)
-                tgt_lang_id_in_model = self.old2new[self.tokenizer.lang_code_to_id[self.tgt_lang]]
-                print(self.plm_model.model.shared.weight[tgt_lang_id_in_model, :])
-                torch.nn.init.normal_(self.plm_model.model.shared.weight[src_lang_id_in_model,:])
-                print('after re-initialize')
-                print(self.plm_model.model.shared.weight[src_lang_id_in_model, :])
+                if plm_cfg.get('src_lang_code_from_scratch',True):
+                    src_lang_id = self.tokenizer.lang_code_to_id[self.tokenizer.src_lang]
+                    src_lang_id_in_model = self.old2new[src_lang_id]
+                    print('Reinitialize src_lang_code {} {}  {}'.format(
+                        self.tokenizer.src_lang, 
+                        src_lang_id, src_lang_id_in_model))
+                    print('Before re-initialize')
+                    print(self.tokenizer.src_lang)
+                    print(self.plm_model.model.shared.weight[src_lang_id_in_model, :])
+                    print('=corresponding ?tgt_lang ',self.tgt_lang)
+                    tgt_lang_id_in_model = self.old2new[self.tokenizer.lang_code_to_id[self.tgt_lang]]
+                    print(self.plm_model.model.shared.weight[tgt_lang_id_in_model, :])
+                    torch.nn.init.normal_(self.plm_model.model.shared.weight[src_lang_id_in_model,:])
+                    print('after re-initialize')
+                    print(self.plm_model.model.shared.weight[src_lang_id_in_model, :])
+
+            elif self.plm_type == 'gpt2':
+                self.plm_model = GPT2LMHeadModel.from_pretrained(plm_cfg['pretrained_dir'])
+                self.plm_embed_scale = 1
+                vocab_size = self.plm_model.config.vocab_size
+                self.old2new = {i:i for i in range(vocab_size)}
+                self.new2old = {i:i for i in range(vocab_size)}
+
+
 
             if plm_cfg.get('from_scratch',False):
                 print('reinitialize plm_model to train from scratch')
@@ -302,7 +316,10 @@ class SignModel_PLM(nn.Module):
 
             if plm_cfg.get('freeze_embed',False):
                 print('freeze plm embedding!')
-                freeze_params(self.plm_model.model.shared)
+                if self.plm_type=='mbart':
+                    freeze_params(self.plm_model.model.shared)
+                elif self.plm_type=='gpt2':
+                    freeze_params(self.plm_model.transformer.wte)
             
         if 'gloss_embedding_layer' in plm_cfg:
             gls_emb_cfg = plm_cfg['gloss_embedding_layer']
@@ -356,16 +373,29 @@ class SignModel_PLM(nn.Module):
         if do_translation:
             self.loss_level = plm_cfg.get('loss_level', 'sentence')
             self.label_smoothing = plm_cfg.get('label_smoothing', 0.2)
-            self.ignore_index = self.tokenizer.pad_token_id  # ???
+
+            if self.plm_type == 'mbart':
+                self.ignore_index = self.tokenizer.pad_token_id  # ???
+                self.gls_lang_index = self.old2new[self.tokenizer.lang_code_to_id[self.tokenizer.src_lang]]
+                self.gls_eos_index = self.old2new[self.tokenizer.eos_token_id]
+                self.txt_bos_index = self.old2new[self.tokenizer.convert_tokens_to_ids(
+                    self.tokenizer.tgt_lang)]
+                self.txt_eos_index = self.old2new[self.tokenizer.eos_token_id]
+                print('txt_eos_index', self.txt_eos_index)
+                self.pad_token_id = self.tokenizer.pad_token_id
+            elif self.plm_type == 'gpt2':
+                self.tokenizer.pad_token = '<pad>'
+                self.ignore_index = self.tokenizer.convert_tokens_to_ids('<pad>') 
+                self.gls_eos_index = self.tokenizer.convert_tokens_to_ids('</s>') 
+                self.txt_bos_index = self.tokenizer.convert_tokens_to_ids('<s>') 
+                self.txt_eos_index = self.tokenizer.convert_tokens_to_ids('</s>')
+                self.pad_token_id = self.tokenizer.convert_tokens_to_ids('<pad>')
             self.translation_loss_fun = XentLoss(
                 pad_index=self.ignore_index,  # ignore
                 smoothing=self.label_smoothing)
-            self.gls_lang_index = self.old2new[self.tokenizer.lang_code_to_id[self.tokenizer.src_lang]]
-            self.gls_eos_index = self.old2new[self.tokenizer.eos_token_id]
-            self.txt_bos_index = self.old2new[self.tokenizer.convert_tokens_to_ids(
-                self.tokenizer.tgt_lang)]
-            self.txt_eos_index = self.old2new[self.tokenizer.eos_token_id]
-            print('txt_eos_index', self.txt_eos_index)
+
+            
+
 
 
 
@@ -406,7 +436,7 @@ class SignModel_PLM(nn.Module):
         new_batch_input_ids = deepcopy(batch_input_ids)#.clone()
         for bi,input_ids in enumerate(batch_input_ids):
             for ii, id_ in enumerate(input_ids):
-                if id_.item() in [self.gls_lang_index]: #say 31
+                if self.plm_type=='mbart' and id_.item() in [self.gls_lang_index]: #say 31
                     #is a special token but won't be ignored by batch_decode, so here we convert it to a special token
                     new_batch_input_ids[bi][ii] = 2 # </s>
                 else:
@@ -428,34 +458,46 @@ class SignModel_PLM(nn.Module):
             else:
                 raise ValueError
         #print(batch_raw_txt) #debughere!
-        with self.tokenizer.as_target_tokenizer():
-            labels = self.tokenizer(
-                batch_raw_txt,            
-                padding='longest', #we've already control the maximum length of input seq in dataloader
-                return_attention_mask=True,
-                return_length=True,
-                return_tensors="pt")
-        #print(labels['input_ids'])
-        labels['input_ids'] = self.map_old2new(labels['input_ids'])
-        decoder_input_ids, label_input_ids = shift_tokens_right(
-            labels['input_ids'].clone(), 
-            self.tokenizer.pad_token_id,
-            ignore_index=self.ignore_index) #[lang, ]
-        decoder_attention_mask = labels['attention_mask'] #attention mask keeps the same after shifting
+        if self.plm_type == 'mbart':
+            with self.tokenizer.as_target_tokenizer():
+                labels = self.tokenizer(
+                    batch_raw_txt,            
+                    padding='longest', #we've already control the maximum length of input seq in dataloader
+                    return_attention_mask=True,
+                    return_length=True,
+                    return_tensors="pt")
+            #print(labels['input_ids'])
+            labels['input_ids'] = self.map_old2new(labels['input_ids'])
+            decoder_input_ids, label_input_ids = shift_tokens_right(
+                labels['input_ids'].clone(), 
+                self.pad_token_id,
+                ignore_index=self.ignore_index) #[lang, ]
+            decoder_attention_mask = labels['attention_mask'] #attention mask keeps the same after shifting
+            if self.decoder_mask_prob>0:
+                random_mask = torch.rand(decoder_attention_mask.shape)>self.decoder_mask_prob
+                decoder_attention_mask = decoder_attention_mask*random_mask
+            return label_input_ids.to(device), decoder_input_ids.to(device), decoder_attention_mask.to(device)
 
-        if self.decoder_mask_prob>0:
-            random_mask = torch.rand(decoder_attention_mask.shape)>self.decoder_mask_prob
-            decoder_attention_mask = decoder_attention_mask*random_mask
-        return label_input_ids.to(device), decoder_input_ids.to(device), decoder_attention_mask.to(device)
+        elif self.plm_type == 'gpt2':
+            tokenizer_outputs = self.tokenizer(batch_raw_txt, return_length=True)
+            input_ids, input_lengths = tokenizer_outputs['input_ids'], tokenizer_outputs['length']
+            input_ids = [[self.txt_bos_index] + ids for ids in input_ids]
+            input_lengths = [le+1 for le in input_lengths]
+            return input_ids, input_lengths
+
+
 
     def prepare_plm_inputs(self,input_embed, input_mask, txt_input=None, txt_mask=None,
             fusion=False, batch_pred_ids=None):
         #here we need to append </s> <src_lang_code>  to input_embed
         #print('eos_index', self.gls_eos_index) #debughere!
         #print('gls_lang_index', self.gls_lang_index) #debughere!
-        eos_embedding = self.plm_model.model.shared.weight[self.gls_eos_index,:]
-        src_lang_code_embedding = self.plm_model.model.shared.weight[self.gls_lang_index,:]
-        suffix_emb = torch.stack([eos_embedding, src_lang_code_embedding], dim=0) # 2,1024
+        if self.plm_type=='mbart':
+            eos_embedding = self.plm_model.model.shared.weight[self.gls_eos_index,:]
+            src_lang_code_embedding = self.plm_model.model.shared.weight[self.gls_lang_index,:]
+            suffix_emb = torch.stack([eos_embedding, src_lang_code_embedding], dim=0) # 2,1024
+        elif self.plm_type=='gpt2':
+            suffix_emb = None#self.plm_model.transformer.wte.weight[self.txt_bos_index,:].unsqueeze(0) #1, 768
         if fusion:
             assert batch_pred_ids!=None
             gloss_embeddings, gloss_mask = self.build_gloss_target_embedding(
@@ -463,12 +505,6 @@ class SignModel_PLM(nn.Module):
                 tgt_ids=batch_pred_ids,
                 return_mask=True
             )
-            if 0: #debughere!
-                print('batch_pred_ids')
-                print(batch_pred_ids)
-                print('gloss_embeddings')
-                print(gloss_embeddings)
-                input()
             if self.fusion_use_gloss and not self.fusion_use_vis:
                 return self.prepare_plm_inputs(
                     input_embed = gloss_embeddings,
@@ -484,111 +520,170 @@ class SignModel_PLM(nn.Module):
         input_embed_w_suffix, input_mask_w_suffix = [], torch.zeros([batch_size, max_length],dtype=torch.long, device=input_embed.device)
         for i in range(batch_size):
             valid_emb = input_embed[i,:valid_lengths[i]]
-            emb_w_suffix = torch.cat([valid_emb, suffix_emb],  dim=0) # VALID_LEN+2, 1024
-            pad_len = max_length-(valid_lengths[i]+2)
-            if pad_len>0:
-                paddings = torch.zeros([pad_len,dim_],device=input_embed.device, dtype=input_embed.dtype)
-                padded_emb_w_suffix = torch.cat([emb_w_suffix, paddings], dim=0)
+            if suffix_emb!=None:
+                emb_w_suffix = torch.cat([valid_emb, suffix_emb],  dim=0) # VALID_LEN+2, 1024
             else:
-                padded_emb_w_suffix = emb_w_suffix
-            input_embed_w_suffix.append(padded_emb_w_suffix)
-            input_mask_w_suffix[i,:valid_lengths[i]+2] = 1
-        input_embed_w_suffix = torch.stack(input_embed_w_suffix, dim=0) #B,L,D
-
-        if fusion:
-            assert self.fusion_use_vis #currently, don't support only use gloss embeddings here?
-            if self.fusion_method=='prepend' and self.fusion_use_gloss:
-                #we don't need any fc layer? yes the visual feature has already been transformed before (preceding layer)
-                fusion_input_embed_w_suffix = []
-                max_length = 2*max_length_wo_suffix + 2
-                new_input_mask_w_suffix = torch.zeros([batch_size, max_length],dtype=torch.long, device=gloss_embeddings.device)
-                for bi in range(batch_size):
-                    gls_embed = gloss_embeddings[bi, :valid_lengths[bi]]
-                    input_embed_prepended = torch.cat([gls_embed, input_embed_w_suffix[bi,:]],dim=0) 
-                    pad_len = max_length-input_embed_prepended.shape[0]
-                    if pad_len>=0:
-                        paddings = torch.zeros([pad_len,dim_],
-                            device=gloss_embeddings.device, 
-                            dtype=gloss_embeddings.dtype)
-                        padded_input_embed_prepended = torch.cat([input_embed_prepended,paddings], dim=0)
-                    else:
-                        padded_input_embed_prepended = input_embed_prepended
-                    fusion_input_embed_w_suffix.append(padded_input_embed_prepended)
-                    new_input_mask_w_suffix[bi, :input_embed_prepended.shape[0]] = 1
-                #input_mask_w_suffix = new_input_mask_w_suffix
-                fusion_input_embed_w_suffix = torch.stack(fusion_input_embed_w_suffix, dim=0)
-                input_mask_w_suffix = new_input_mask_w_suffix
-            else:
-                #replace pad with zero
-                zeros = torch.zeros_like(gloss_embeddings)
-                gloss_embeddings = torch.where(
-                    gloss_mask.transpose(1,2),#B,L,1
-                    gloss_embeddings,
-                    zeros) 
-                #append  another two zeros
-                zeros_suffix = torch.zeros([batch_size, 2, dim_], dtype=gloss_embeddings.dtype, device=gloss_embeddings.device)
-                gloss_embedding_w_suffix = torch.cat([gloss_embeddings, zeros_suffix], dim=1) #B,L,D B,2,D
-                if self.fusion_method=='plus':
-                    fusion_input_embed_w_suffix = 0
-                    if self.fusion_use_vis:
-                        # print('input_embed_w_suffix')
-                        # print(input_embed_w_suffix)
-                        fusion_input_embed_w_suffix += input_embed_w_suffix*self.fusion_vis_weight
-                    if self.fusion_use_gloss:
-                        # print('gloss_embedding_w_suffix')
-                        # print(gloss_embedding_w_suffix)
-                        fusion_input_embed_w_suffix += gloss_embedding_w_suffix
-                elif self.fusion_method=='cat':
+                emb_w_suffix = valid_emb
+            if self.plm_type == 'mbart': #pad encoder inputs for mbart
+                pad_len = max_length-(valid_lengths[i]+2)
+                if pad_len>0:
+                    paddings = torch.zeros([pad_len,dim_],device=input_embed.device, dtype=input_embed.dtype)
+                    padded_emb_w_suffix = torch.cat([emb_w_suffix, paddings], dim=0)
+                else:
+                    padded_emb_w_suffix = emb_w_suffix
+                input_embed_w_suffix.append(padded_emb_w_suffix)
+                input_mask_w_suffix[i,:valid_lengths[i]+2] = 1
+            elif self.plm_type == 'gpt2':
+                input_embed_w_suffix.append(emb_w_suffix)
+        
+        if self.plm_type == 'mbart':
+            input_embed_w_suffix = torch.stack(input_embed_w_suffix, dim=0) #B,L,D
+            if fusion:
+                assert self.fusion_use_vis #currently, don't support only use gloss embeddings here?
+                if self.fusion_method=='prepend' and self.fusion_use_gloss:
+                    #we don't need any fc layer? yes the visual feature has already been transformed before (preceding layer)
                     fusion_input_embed_w_suffix = []
-                    if self.fusion_use_vis:
-                        fusion_input_embed_w_suffix.append(input_embed_w_suffix)
-                    if self.fusion_use_gloss:
-                        fusion_input_embed_w_suffix.append(gloss_embedding_w_suffix)
-                    fusion_input_embed_w_suffix = torch.cat(fusion_input_embed_w_suffix, dim=-1) #B,L,2D
-                elif self.fusion_method=='prepend':
-                    raise ValueError #prepend
-                #fc layer!
-            fusion_input_embed_w_suffix = self.fusion_fc(fusion_input_embed_w_suffix)
-            input_embed_w_suffix = fusion_input_embed_w_suffix*self.plm_embed_scale
-            if 0: #debug here!
-                print('with fusion input_embed')
-                print(self.plm_embed_scale)
-                print(input_embed_w_suffix)
-                #print(input_mask_w_suffix)
-                input()
-
-
-        else:
-            input_embed_w_suffix = input_embed_w_suffix*self.plm_embed_scale
-            if 0: #debug here!
-                print('without fusion input_embed')
-                print(self.plm_embed_scale)
-                print(input_embed_w_suffix)
-                #print(input_mask_w_suffix)
-                input()
-
-        encoder_inputs = {
-            'inputs_embeds': input_embed_w_suffix, #B,L,D
-            'attention_mask': input_mask_w_suffix, #B,L
-        }
-        if txt_input != None and txt_mask != None: #copy from PLM 
-            #txt_mask (B,1,L) is not causal yet, so we can get txt_lengths from it
-            txt_lengths = torch.sum(
-                txt_mask, dim=-1).squeeze(1)  # B (including)
-            txt_label, txt_input, txt_mask_transformer = self.prepare_txt_input(
-                txt_input, txt_lengths) #mask!
-            decoder_inputs = {
-                'decoder_input_ids': txt_input,
-                'decoder_attention_mask': txt_mask_transformer,
-                'labels': txt_label
+                    max_length = 2*max_length_wo_suffix + 2
+                    new_input_mask_w_suffix = torch.zeros([batch_size, max_length],dtype=torch.long, device=gloss_embeddings.device)
+                    for bi in range(batch_size):
+                        gls_embed = gloss_embeddings[bi, :valid_lengths[bi]]
+                        input_embed_prepended = torch.cat([gls_embed, input_embed_w_suffix[bi,:]],dim=0) 
+                        pad_len = max_length-input_embed_prepended.shape[0]
+                        if pad_len>=0:
+                            paddings = torch.zeros([pad_len,dim_],
+                                device=gloss_embeddings.device, 
+                                dtype=gloss_embeddings.dtype)
+                            padded_input_embed_prepended = torch.cat([input_embed_prepended,paddings], dim=0)
+                        else:
+                            padded_input_embed_prepended = input_embed_prepended
+                        fusion_input_embed_w_suffix.append(padded_input_embed_prepended)
+                        new_input_mask_w_suffix[bi, :input_embed_prepended.shape[0]] = 1
+                    #input_mask_w_suffix = new_input_mask_w_suffix
+                    fusion_input_embed_w_suffix = torch.stack(fusion_input_embed_w_suffix, dim=0)
+                    input_mask_w_suffix = new_input_mask_w_suffix
+                else:
+                    #replace pad with zero
+                    zeros = torch.zeros_like(gloss_embeddings)
+                    gloss_embeddings = torch.where(
+                        gloss_mask.transpose(1,2),#B,L,1
+                        gloss_embeddings,
+                        zeros) 
+                    #append  another two zeros
+                    zeros_suffix = torch.zeros([batch_size, 2, dim_], dtype=gloss_embeddings.dtype, device=gloss_embeddings.device)
+                    gloss_embedding_w_suffix = torch.cat([gloss_embeddings, zeros_suffix], dim=1) #B,L,D B,2,D
+                    if self.fusion_method=='plus':
+                        fusion_input_embed_w_suffix = 0
+                        if self.fusion_use_vis:
+                            # print('input_embed_w_suffix')
+                            # print(input_embed_w_suffix)
+                            fusion_input_embed_w_suffix += input_embed_w_suffix*self.fusion_vis_weight
+                        if self.fusion_use_gloss:
+                            # print('gloss_embedding_w_suffix')
+                            # print(gloss_embedding_w_suffix)
+                            fusion_input_embed_w_suffix += gloss_embedding_w_suffix
+                    elif self.fusion_method=='cat':
+                        fusion_input_embed_w_suffix = []
+                        if self.fusion_use_vis:
+                            fusion_input_embed_w_suffix.append(input_embed_w_suffix)
+                        if self.fusion_use_gloss:
+                            fusion_input_embed_w_suffix.append(gloss_embedding_w_suffix)
+                        fusion_input_embed_w_suffix = torch.cat(fusion_input_embed_w_suffix, dim=-1) #B,L,2D
+                    elif self.fusion_method=='prepend':
+                        raise ValueError #prepend
+                    #fc layer!
+                fusion_input_embed_w_suffix = self.fusion_fc(fusion_input_embed_w_suffix)
+                input_embed_w_suffix = fusion_input_embed_w_suffix*self.plm_embed_scale
+                if 0: #debug here!
+                    print('with fusion input_embed')
+                    print(self.plm_embed_scale)
+                    print(input_embed_w_suffix)
+                    #print(input_mask_w_suffix)
+                    input()
+            else:
+                input_embed_w_suffix = input_embed_w_suffix*self.plm_embed_scale
+            encoder_inputs = {
+                'inputs_embeds': input_embed_w_suffix, #B,L,D
+                'attention_mask': input_mask_w_suffix, #B,L
             }
-            #print('decoder inputs')
-            #print(decoder_inputs) #debughere!
-        else:
-            batch_start_ids = torch.ones([batch_size,1],dtype=torch.long, device=input_embed.device)*self.txt_bos_index
-            decoder_inputs = {'decoder_input_ids':batch_start_ids} #for inference
-        inputs = {**encoder_inputs, **decoder_inputs}
-        return inputs
+            if txt_input != None and txt_mask != None: #copy from PLM 
+                #txt_mask (B,1,L) is not causal yet, so we can get txt_lengths from it
+                txt_lengths = torch.sum(
+                    txt_mask, dim=-1).squeeze(1)  # B (including)
+                txt_label, txt_input, txt_mask_transformer = self.prepare_txt_input(
+                    txt_input, txt_lengths) #mask!
+                decoder_inputs = {
+                    'decoder_input_ids': txt_input,
+                    'decoder_attention_mask': txt_mask_transformer,
+                    'labels': txt_label
+                }
+                #print('decoder inputs')
+                #print(decoder_inputs) #debughere!
+            else:
+                batch_start_ids = torch.ones([batch_size,1],dtype=torch.long, device=input_embed.device)*self.txt_bos_index
+                decoder_inputs = {'decoder_input_ids':batch_start_ids} #for inference
+            inputs = {**encoder_inputs, **decoder_inputs}
+            return inputs
+        elif self.plm_type == 'gpt2':
+            #input_embed_w_suffix 
+            #we need to convert txt to embeds 
+            if txt_input != None and txt_mask != None: # training
+                txt_lengths = torch.sum(
+                    txt_mask, dim=-1).squeeze(1)  # B (including)
+                txt_ids, txt_lengths = self.prepare_txt_input(txt_input, txt_lengths)
+                max_length = max([input_embed_w_suffix[i].shape[0]+txt_lengths[i] for i in range(batch_size)])
+                inputs_embeds, labels, token_type_ids = [], [], []
+                for i in range(batch_size):
+                    txt_emb = self.plm_model.transformer.wte(torch.tensor(txt_ids[i]).to('cuda')) #L, D
+                    assert txt_emb.shape[0] == txt_lengths[i], (txt_emb.shape, txt_lengths[i])
+
+                    gls_len, txt_len = input_embed_w_suffix[i].shape[0], txt_lengths[i]
+                    pad_length = max_length - gls_len - txt_len
+                    emb_list = [input_embed_w_suffix[i], txt_emb]+ \
+                        [self.plm_model.transformer.wte.weight[self.pad_token_id,:].unsqueeze(0)]*pad_length
+                    inputs_embeds.append(torch.cat(emb_list, dim=0)) #L,D
+                    token_type_ids.append([0]*gls_len + [1]*txt_len + [1]*pad_length)
+                    labels.append([self.ignore_index]*gls_len + txt_ids[i][1:] + [self.txt_eos_index] + [self.ignore_index]*pad_length)
+                inputs_embeds = torch.stack(inputs_embeds, dim=0) # B,L,D
+                token_type_ids = torch.tensor(token_type_ids, dtype=torch.long, device=inputs_embeds.device)
+                labels = torch.tensor(labels, dtype=torch.long, device=inputs_embeds.device)
+                #inputs = {'inputs_embeds':inputs_embeds, 'token_type_ids':token_type_ids, 'labels':labels}
+                inputs = {'inputs_embeds':inputs_embeds, 'labels':labels}
+                if DEBUG: #debug
+                    print(inputs)
+                    input()
+                return inputs
+            else: #testing  
+                inputs_embeds, token_type_ids, attention_mask = [], [], []
+                generate_attention_mask = []
+                max_length = max([len(input_embed_w_suffix[i]) for i in range(batch_size)])
+                for i in range(batch_size):
+                    gls_len = input_embed_w_suffix[i].shape[0]
+                    pad_length = max_length - gls_len
+                    emb_list = [self.plm_model.transformer.wte.weight[self.pad_token_id,:].unsqueeze(0)]*pad_length + \
+                        [input_embed_w_suffix[i]]
+                    inputs_embeds.append(torch.cat(emb_list,dim=0)) #L,D
+                    token_type_ids.append([0]*(max_length-1) + [1])
+                    attention_mask.append([0]*(pad_length) + [1]*(max_length - pad_length))
+                    generate_attention_mask.append([0]*(pad_length) + [1]*(max_length - pad_length) + [1])
+                inputs_embeds = torch.stack(inputs_embeds, dim=0) # B,L,D
+                #token_type_ids = torch.tensor(token_type_ids, dtype=torch.long, device=inputs_embeds.device)
+                attention_mask = torch.tensor(attention_mask, dtype=torch.long, device=inputs_embeds.device)
+                #inputs = {'inputs_embeds':inputs_embeds, 'token_type_ids':token_type_ids, 'attention_mask':attention_mask}
+                forward_inputs = {'inputs_embeds':inputs_embeds, 'attention_mask':attention_mask}
+                generate_input_ids = torch.ones([inputs_embeds.shape[0],1], 
+                        device=inputs_embeds.device, dtype=torch.long)*self.txt_bos_index #B,1
+                generate_attention_mask = torch.tensor(generate_attention_mask, dtype=torch.long, device=inputs_embeds.device)
+                generate_inputs = {'input_ids':generate_input_ids,'attention_mask':generate_attention_mask}
+                if DEBUG: #debug
+                    print('forward')
+                    print(forward_inputs)
+                    print('generate')
+                    print(generate_inputs)
+                    input()
+
+                return forward_inputs, generate_inputs
+            
+
     def convert_gls_from_tensor_to_list(self, gls_tensor, gls_lengths):
         gls_list = []
         batch_size = gls_tensor.shape[0]
@@ -606,7 +701,7 @@ class SignModel_PLM(nn.Module):
                 for bi in range(batch_size):
                     #print('sample ', bi)
                     for ii,gid in enumerate(tgt_ids[bi]):
-                        g_str = self.gls_vocab.itos[gid]
+                        g_str = self.gls_vocab.itos[gid].lower()
                         if not g_str in self.gls2embed:
                             if self.fusion and self.sample_strategy=='all':
                                 #add zero
@@ -622,7 +717,8 @@ class SignModel_PLM(nn.Module):
                     for ii in range(len(tgt_ids[bi]), max_length): #pad
                         batch_target_embeddings[bi,ii,:] = src_embeddings[bi,ii,:]
                     new_mask[bi,:len(tgt_ids[bi])] = 1
-                #input()
+
+
         else:
             padded_tgt_ids = self.gls_vocab.stoi[PAD_TOKEN]*torch.ones(
                 [batch_size, max_length],
@@ -738,7 +834,7 @@ class SignModel_PLM(nn.Module):
                     unk_index=self.gls_vocab.stoi['<unk>'])
                 max_len = max([len(ids) for ids in tgt_ids])
             encoder_output, sgn_mask = self.build_gloss_target_embedding(
-                src_embeddings=torch.zeros([batch_size, max_len, 1024], 
+                src_embeddings=torch.zeros([batch_size, max_len, 1024 if self.plm_type=='mbart' else 768], 
                     dtype=batch.sgn.dtype, 
                     device=batch.sgn.device),
                 tgt_ids=tgt_ids,  #ground_truth gls
@@ -861,12 +957,12 @@ class SignModel_PLM(nn.Module):
             else:
                 inputs = self.prepare_plm_inputs(
                     input_embed=encoder_output, input_mask=sgn_mask,
-                    txt_input=txt_input, txt_mask=txt_mask) 
-                if 0:         
-                    print('fusion')
-                    print(inputs)
-                    input()        
+                    txt_input=txt_input, txt_mask=txt_mask)      
             # 'input_ids', 'attention_mask', 'decoder_input_ids' 'decoder_attention_mask' 'labels'
+            if DEBUG:
+                print('forward in get_loss')
+                print(inputs)
+                input()
             output_dict = self.plm_model(
                 **inputs, 
                 return_dict=True,
@@ -875,7 +971,8 @@ class SignModel_PLM(nn.Module):
             batch_size = output_dict['logits'].shape[0]
             log_prob = torch.nn.functional.log_softmax(
                 output_dict['logits'], dim=-1)  # B, T, L
-            if 0:
+            if DEBUG:
+                print('torch.argmax')
                 print(torch.argmax(log_prob, dim=-1))
                 input()
             batch_loss_sum = self.translation_loss_fun(
@@ -961,7 +1058,7 @@ class SignModel_PLM(nn.Module):
                     unk_index=self.gls_vocab.stoi['<unk>'])
                 max_len = max([len(ids) for ids in tgt_ids])
             encoder_output,  new_sgn_mask = self.build_gloss_target_embedding(
-                src_embeddings=torch.zeros([batch_size, max_len, 1024], 
+                src_embeddings=torch.zeros([batch_size, max_len, 1024 if self.plm_type=='mbart' else 768], 
                     dtype=batch.sgn.dtype, 
                     device=batch.sgn.device),
                 tgt_ids=tgt_ids,  #ground_truth gls
@@ -991,33 +1088,48 @@ class SignModel_PLM(nn.Module):
                     txt_input=None, txt_mask=None,
                     fusion=True, 
                     batch_pred_ids=batch_pred_gls)  
-                if 0:
-                    print('fusion')
-                    print(inputs)
-                    input()
             else:
                 inputs = self.prepare_plm_inputs(
                     input_embed=encoder_output, input_mask=new_sgn_mask,
                     txt_input=None, txt_mask=None) 
-                if 0:         
-                    print('fusion')
-                    print(inputs)
-                    input()   
 
-            output_dict = self.plm_model.generate(
-                **inputs,  #include decoder_input_ids
-                max_length=translation_max_output_length,
-                num_beams=translation_beam_size,
-                length_penalty=translation_beam_alpha,
-                return_dict_in_generate=True,
-                output_attentions=True)
+            if self.plm_type == 'mbart':
+                output_dict = self.plm_model.generate(
+                    **inputs,  #include decoder_input_ids
+                    max_length=translation_max_output_length,
+                    num_beams=translation_beam_size,
+                    length_penalty=translation_beam_alpha,
+                    return_dict_in_generate=True,
+                    output_attentions=True)
+            elif self.plm_type == 'gpt2':
+                assert translation_beam_size==1, translation_beam_size
+                forward_inputs, generate_inputs = inputs[0], inputs[1]
+                forward_output = self.plm_model(**forward_inputs,  return_dict=True)
+                #print('here!')
+                #print(forward_output['past_key_values'][0][0][0].shape)
+                output_dict = self.plm_model.generate(
+                    **generate_inputs,
+                    past=forward_output['past_key_values'],
+                    max_length=translation_max_output_length,
+                    num_beams=translation_beam_size,
+                    length_penalty=translation_beam_alpha,
+                    return_dict_in_generate=True,
+                    pad_token_id = self.pad_token_id, # silence warning
+                    eos_token_id=self.txt_eos_index,
+                    output_attentions=True)                 
 
             
             output_dict['sequences'] = self.map_new2old(output_dict['sequences'])
-            if 0:
-                print(output_dict['sequences'])
+
             stacked_txt_output_decoded = self.tokenizer.batch_decode(output_dict['sequences'], 
                 skip_special_tokens=True)
+            if DEBUG:
+                print('decoded sequences')
+                print(output_dict['sequences'])
+
+                print('batch_decode')
+                print(stacked_txt_output_decoded)
+                input()
             if self.tgt_lang=='de_DE':
                 for di, d in enumerate(stacked_txt_output_decoded):
                     if len(d)>2 and d[-1]=='.' and d[-2]!=' ':
