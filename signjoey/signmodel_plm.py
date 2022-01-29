@@ -22,6 +22,8 @@ from copy import deepcopy
 from helpers import get_spans_sequence, batch_random_copy
 import random
 DEBUG = False
+DEBUG2 = False
+DEBUG3 = False
 class PrecedingLayer_weighted_embed(nn.Module):
     def __init__(
         self, 
@@ -791,6 +793,7 @@ class SignModel_PLM(nn.Module):
     ) -> (Tensor, Tensor, Tensor, Tensor):
         other_outputs = {}
         assert output_attention==False
+
         if not self.use_gt_gloss:
             encoder_output, encoder_hidden, attention, intermediate = self.encode(
                 sgn=sgn, sgn_mask=sgn_mask, sgn_length=sgn_lengths, 
@@ -818,9 +821,9 @@ class SignModel_PLM(nn.Module):
                     batch_mask = sgn_mask,  #B,1,L
                     select_strategy=self.sample_strategy,
                     return_pred_gls=True)
-
             else:
                 gloss_probabilities = None
+ 
         else:
             assert batch!=None
             batch_size = batch.gls_lengths.shape[0]

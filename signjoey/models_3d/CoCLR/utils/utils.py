@@ -104,6 +104,10 @@ def neq_load_customized(model, pretrained_dict, verbose=True):
             if k not in pretrained_dict:
                 print(k)
         print('===================================\n')
+        print('---------------------------')
+        print('Weights loaded into new model:')
+        for k in tmp:
+            print(k)
     # pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
     del pretrained_dict
     model_dict.update(tmp)

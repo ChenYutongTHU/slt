@@ -65,7 +65,7 @@ class TrainManager:
         self.use_amp = config['training'].get('use_amp',False)
         self.train_config = config['training']
         self.input_data = config["data"].get("input_data", "feature")
-        if self.input_data in ['feature','gloss']:
+        if self.input_data in ['feature','gloss','feature_2d']:
             self.tokenizer_type = None
         else:
             self.tokenizer_type = config['model']['tokenizer']['architecture']
@@ -138,9 +138,23 @@ class TrainManager:
             slt_lr = train_config.get("learning_rate", 3.0e-4)
             tok_lr = slt_lr*train_config.get("learning_rate_ratio", 1)
             parameters=[
-                {'params':model.signmodel.parameters(), 'lr':slt_lr},
+                #{'params':model.signmodel.parameters(), 'lr':slt_lr},
                 {'params':model.tokenizer.parameters(), 'lr':tok_lr},
             ]
+            if config['model'].get('signmodel_type','vanilla')=='signmodel_plm':
+                module_lr = train_config.get("module_learning_rate",{})
+                parameters = []
+                for n, p in model.signmodel.named_children():
+                    lr_ = slt_lr
+                    for m, lr in module_lr.items():
+                        if m in n:
+                            lr_ = lr
+                    parameters.append({'params':p.parameters(), 'lr':lr_})
+                    print(n, lr_)   
+                print(parameters)
+                #input()              
+            else:
+                parameters.append({'params':model.signmodel.parameters(), 'lr':slt_lr})
         elif config['model'].get('signmodel_type','vanilla')=='signmodel_plm':
             default_lr = train_config.get("learning_rate", 1.0e-3)
             module_lr = train_config.get("module_learning_rate",{})
@@ -152,6 +166,7 @@ class TrainManager:
                         lr_ = lr
                 parameters.append({'params':p.parameters(), 'lr':lr_})
                 print(n, lr_) 
+                #input()
         else:
             parameters = model.parameters()
         self.optimizer = build_optimizer(
@@ -466,7 +481,7 @@ class TrainManager:
         # restore model and optimizer parameters
         model_state = model_checkpoint["model_state"]
         # signmodel load params from 
-        if self.cfg['data'].get('input_data', 'feature') == 'feature' \
+        if self.cfg['data'].get('input_data', 'feature') in ['feature','feature_2d'] \
             and self.train_config['resume_training'] == False:
             new_model_state = {}
             for k,v in model_state.items():
@@ -699,7 +714,7 @@ class TrainManager:
                         log_out += "Txt Tokens per Sec: {:8.0f} || ".format(
                             elapsed_txt_tokens / elapsed
                         )
-                    if self.input_data in ['feature','gloss']:
+                    if self.input_data in ['feature','gloss', 'feature_2d']:
                         log_out += "Lr: {:.6f}".format(self.optimizer.param_groups[0]["lr"])
                     else:
                         log_out += "signmodel Lr: {:.6f} ".format(self.optimizer.param_groups[0]["lr"])
@@ -1392,7 +1407,7 @@ def train(cfg_file: str, preemptible: bool=False) -> None:
     do_recognition = cfg["training"].get("recognition_loss_weight", 1.0) > 0.0
     do_translation = cfg["training"].get("translation_loss_weight", 1.0) > 0.0
     do_distillation = cfg["training"].get("distillation_loss_weight", 1.0) > 0.0
-    if input_data == 'feature':
+    if input_data in ['feature','feature_2d']:
         model = build_model(
             cfg=cfg["model"],
             gls_vocab=gls_vocab,
@@ -1403,7 +1418,8 @@ def train(cfg_file: str, preemptible: bool=False) -> None:
             else cfg["data"]["feature_size"],
             do_recognition=do_recognition,
             do_translation=do_translation,
-            do_distillation=do_distillation
+            do_distillation=do_distillation,
+            input_data = input_data
         )
     elif input_data == 'image':
         model = build_model(

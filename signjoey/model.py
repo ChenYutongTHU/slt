@@ -3,7 +3,7 @@
 from signjoey.gloss_cls import gloss_cls_head
 from json import encoder
 import os
-from signjoey.model_3d import backbone_3D
+from signjoey.model_3d import backbone_3D, partial_backbone_3D
 from utils_3d import get_premodel_weight, pre_task
 import tensorflow as tf
 
@@ -36,7 +36,7 @@ from typing import Union
 from signjoey.resnet import Resnet50
 from signjoey.models_3d.CoCLR.utils.utils import neq_load_customized
 from initialization import initialize_embed
-
+DEBUG = False
 
 def get_loss_for_batch(
     model,
@@ -70,20 +70,32 @@ def get_loss_for_batch(
     model_name = model.__class__.__name__
     if model_name == 'DistributedDataParallel':
         model_name = model.module.__class__.__name__
-    if input_data=='feature':
-        outputs = model(
-            sgn=batch.sgn,
-            sgn_mask=batch.sgn_mask,
-            sgn_lengths=batch.sgn_lengths,
-            txt_input=batch.txt_input,
-            txt_mask=batch.txt_mask,
-            output_attention=output_attention,
-            batch=batch
-            )
+    if input_data in ['feature','feature_2d']:
+        if input_data == 'feature':
+            outputs = model(
+                sgn=batch.sgn,
+                sgn_mask=batch.sgn_mask,
+                sgn_lengths=batch.sgn_lengths,
+                txt_input=batch.txt_input,
+                txt_mask=batch.txt_mask,
+                output_attention=output_attention,
+                batch=batch
+                )
+        else:
+            print(batch.sequence)
+            outputs = model(
+                sgn_img=batch.sgn,
+                sgn_mask=None,
+                sgn_lengths=batch.sgn_lengths,
+                txt_input=batch.txt_input,
+                txt_mask=batch.txt_mask,
+                output_attention=output_attention,
+                batch=batch
+                )            
         if model_name=='SignModel':
             assert len(outputs) == 4, len(outputs)
             decoder_outputs, gloss_probabilities, attention, encoder_outputs = outputs
-        elif model_name=='SignModel_PLM':
+        elif model_name=='SignModel_PLM' or input_data=='feature_2d':
             translation_loss, gloss_probabilities, attention, encoder_outputs, distillation_loss, other_outputs = outputs
             #other_outputs['translation_input'] = other_outputs.get('translation_input',None)
 
@@ -98,7 +110,8 @@ def get_loss_for_batch(
             sgn_lengths=batch.sgn_lengths,
             txt_input=batch.txt_input,
             txt_mask=batch.txt_mask,
-            output_attention=output_attention
+            output_attention=output_attention,
+            batch=batch
         )
         if signmodel_name == 'SignModel':
             decoder_outputs, gloss_probabilities, attention, encoder_outputs = signmodel_outputs
@@ -696,6 +709,7 @@ class Tokenizer_SignModel(nn.Module):
         **kwargs,
     ) -> (Tensor, Tensor, Tensor, Tensor):
 
+
         if self.tokenizer_type in ['s3d','s3ds','s3dt','i3d']:
             assert sgn_img.dim() == 5, sgn_img.shape #B,C,T,H,W
             assert sgn_mask==None
@@ -958,6 +972,19 @@ def build_model(
 
     if input_data == 'feature':
         return sign_model
+    elif input_data == 'feature_2d':
+        assert cfg["tokenizer"]["architecture"]=='s3ds', cfg['tokenizer'].get('freeze_block', 0) in [2,3]
+        tokenizer = partial_backbone_3D(
+            ckpt_dir=cfg["tokenizer"]["pretrained_ckpt"],
+            freeze_block=cfg['tokenizer'].get('freeze_block', 0),
+        )
+        tokenizer_signmodel = Tokenizer_SignModel(
+            tokenizer_type=cfg["tokenizer"]["architecture"],
+            tokenizer=tokenizer,
+            signmodel=sign_model,
+            track_bn=cfg.get("track_bn", True),
+            bn_train_mode=cfg.get("bn_train_mode", 'train'))
+        return tokenizer_signmodel
     else:
         if cfg["tokenizer"]["architecture"] == 'cnn':
             tokenizer = CNN(pretrained_ckpt=cfg["cnn"].get('pretrained_ckpt', None), 

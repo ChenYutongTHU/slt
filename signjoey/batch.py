@@ -246,7 +246,7 @@ class Batch_from_examples(Batch):
         # num_frames
         self.num_frames = getattr(torch_batch, 'num_frames', None)
         self.input_data = input_data
-        if input_data == 'feature':
+        if input_data in ['feature']:
             self.sgn, self.sgn_lengths = torch_batch.sgn
             # Here be dragons
             
@@ -287,7 +287,28 @@ class Batch_from_examples(Batch):
 
             self.sgn_dim = sgn_dim
             self.sgn_mask = (self.sgn != torch.zeros(
-                sgn_dim))[..., 0].unsqueeze(1)
+                sgn_dim))[..., 0].unsqueeze(1) #B,1,L
+        elif input_data == 'feature_2d':
+            self.sgn, self.sgn_lengths, self.sgn_dim, self.sgn_mask = [], [], None, None
+            feature_dir = data_cfg['feature_2d_dir']
+            for idx, name in enumerate(self.sequence):
+                feature_filename = os.path.join(feature_dir, name.replace('/','_')+'.bin')
+                assert os.path.isfile(feature_filename), (feature_filename)
+                feature = torch.load(feature_filename, map_location='cpu') #D,T,H,W
+                self.sgn_lengths.append(feature.shape[1])
+                self.sgn.append(feature)
+            max_length = max(self.sgn_lengths)
+            self.sgn_mask = torch.zeros([len(self.sequence), 1, max_length], dtype=torch.long)
+            self.sgn_dim, _, h, w = self.sgn[-1].shape
+            #padding
+            for idx, sgn_ in enumerate(self.sgn):
+                pad_length = max_length-sgn_.shape[1]
+                if pad_length>0:
+                    padding = torch.zeros([self.sgn_dim, pad_length, h, w],dtype=sgn_.dtype)
+                    self.sgn[idx] = torch.cat([sgn_, padding], dim=1)
+                self.sgn_mask[idx, :, :sgn_.shape[1]] = 1
+            self.sgn = torch.stack(self.sgn, dim=0) # B,D,T,H,W  
+
         elif input_data == 'image' and self.tokenizer_type=='cnn':
             assert split != None, (split)
             if split == 'train':

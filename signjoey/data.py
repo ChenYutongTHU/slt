@@ -121,7 +121,7 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
         include_lengths=True,
     )
 
-    if input_data == 'feature':
+    if input_data in ['feature']:
         filter_pred = lambda x: len(vars(x)["sgn"]) <= max_sent_length and len(vars(x)["txt"]) <= max_sent_length
     else:
         filter_pred = lambda x: vars(x)['num_frames'] <= max_sent_length and len(

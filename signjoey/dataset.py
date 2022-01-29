@@ -43,7 +43,7 @@ class SignTranslationDataset(data.Dataset):
                 data.Dataset.
         """
         if not isinstance(fields[0], (tuple, list)):
-            if input_data == 'feature':
+            if input_data in ['feature']:#, 'feature_2d']:
                 fields = [
                     ("sequence", fields[0]),
                     ("signer", fields[1]),
@@ -91,7 +91,7 @@ class SignTranslationDataset(data.Dataset):
                     if 'num_frames' in s:
                         samples[seq_id]['num_frames'] = s['num_frames']
                 #downsample
-                if input_data=='feature':
+                if input_data in ['feature']:#, 'feature_2d']:
                     samples[seq_id]['sign'] = samples[seq_id]['sign'][0::downsample,:] # L',d
                     samples[seq_id]['num_frames'] = samples[seq_id]['sign'].shape[0]
                 #samples[seq_id]['num_frames']
@@ -100,14 +100,14 @@ class SignTranslationDataset(data.Dataset):
         examples = []
         for s in samples:
             sample = samples[s]
-            if input_data == 'feature':
+            if input_data  in ['feature']:#, 'feature_2d']:
                 examples.append(
                     data.Example.fromlist(
                         [
                             sample["name"],
                             sample["signer"],
                             # This is for numerical stability
-                            sample["sign"] + 1e-8,
+                            sample["sign"] + 1e-8 if input_data=='feature' else sample['sign'],
                             sample["gloss"].strip(),
                             sample["text"].strip(),
                         ],
