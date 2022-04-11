@@ -81,7 +81,7 @@ class SignTranslationDataset(data.Dataset):
                 else:
                     samples[seq_id] = {
                         "name": s["name"],
-                        "signer": s["signer"],
+                        "signer": s.get("signer",0),
                         "gloss": s["gloss"],
                         "text": s["text"],
                         "sign": s["sign"],

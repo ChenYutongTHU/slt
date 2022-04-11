@@ -702,14 +702,16 @@ class SignModel_PLM(nn.Module):
                 batch_target_embeddings = torch.zeros_like(src_embeddings) #B,T,D <pad>
                 for bi in range(batch_size):
                     #print('sample ', bi)
+                    #print(tgt_ids[bi])
                     for ii,gid in enumerate(tgt_ids[bi]):
-                        g_str = self.gls_vocab.itos[gid].lower()
+                        g_str = self.gls_vocab.itos[gid]#.lower()
+                        #print(gid, g_str)
                         if not g_str in self.gls2embed:
                             if self.fusion and self.sample_strategy=='all':
                                 #add zero
                                 batch_target_embeddings[bi,ii,:] = 0
                             else:
-                                print(gid, g_str, end=' ')
+                                print('oov', gid, g_str)
                                 batch_target_embeddings[bi,ii,:] = src_embeddings[bi, ii, :]
                             #     input()
                         else:
@@ -719,7 +721,7 @@ class SignModel_PLM(nn.Module):
                     for ii in range(len(tgt_ids[bi]), max_length): #pad
                         batch_target_embeddings[bi,ii,:] = src_embeddings[bi,ii,:]
                     new_mask[bi,:len(tgt_ids[bi])] = 1
-
+                    #input()
 
         else:
             padded_tgt_ids = self.gls_vocab.stoi[PAD_TOKEN]*torch.ones(
